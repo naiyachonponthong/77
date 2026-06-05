@@ -86,6 +86,7 @@ function doGet(e) {
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
         case 'getReceives':         result = getReceives(args[0], args[1]); break;
         case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
+        case 'addWithdrawalBatch':  result = addWithdrawalBatch(args[0], args[1]); break;
         case 'getWithdrawals':      result = getWithdrawals(args[0], args[1]); break;
         case 'approveWithdrawal':   result = approveWithdrawal(args[0], args[1], args[2]); break;
         case 'rejectWithdrawal':    result = rejectWithdrawal(args[0], args[1], args[2]); break;
@@ -607,6 +608,70 @@ function addWithdrawal(token, wdData) {
   }
 }
 
+/** addWithdrawalBatch — ยื่นคำขอเบิกหลายรายการในใบเดียว */
+function addWithdrawalBatch(token, batchData) {
+  try {
+    var session = validateSession(token);
+    if (!session) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
+
+    var itemsSheet = getSheetData('Items');
+    var batchItems = [];
+
+    for (var i = 0; i < batchData.items.length; i++) {
+      var d = batchData.items[i];
+      var item = null;
+      for (var j = 0; j < itemsSheet.length; j++) {
+        if (itemsSheet[j].id === d.item_id) { item = itemsSheet[j]; break; }
+      }
+      if (!item) return { success: false, message: 'ไม่พบรายการวัสดุ ID: ' + d.item_id };
+      var qty = parseInt(d.quantity);
+      if (!qty || qty <= 0) return { success: false, message: 'จำนวนไม่ถูกต้องสำหรับ "' + item.name + '"' };
+      if (qty > item.current_stock) return { success: false, message: '"' + item.name + '" สต็อกไม่พอ (คงเหลือ ' + item.current_stock + ')' };
+      batchItems.push({ item_id: item.id, item_name: item.name, item_code: item.item_code, quantity: qty, unit: item.unit });
+    }
+
+    if (batchItems.length === 0) return { success: false, message: 'ไม่มีรายการ' };
+
+    var wdNo = generateRunningNumber('WD', 'Withdrawals');
+    var wd = {
+      id: Utilities.getUuid(),
+      withdraw_no: wdNo,
+      is_batch: true,
+      items_json: JSON.stringify(batchItems),
+      item_id: 'batch',
+      item_name: 'หลายรายการ (' + batchItems.length + ' รายการ)',
+      item_code: '',
+      quantity_requested: batchItems.length,
+      quantity_approved: 0,
+      unit: 'รายการ',
+      purpose: batchData.purpose || '',
+      note: batchData.note || '',
+      status: 'pending',
+      requested_by: session.user_id,
+      requested_by_name: session.name,
+      requested_at: new Date().toISOString(),
+      approved_by: '',
+      approved_by_name: '',
+      approved_at: '',
+      reject_reason: '',
+      via_qr: false
+    };
+    saveToSheet('Withdrawals', wd);
+
+    var itemsList = batchItems.map(function(b){ return '  - ' + b.item_name + ' x' + b.quantity + ' ' + b.unit; }).join('\n');
+    var msg = '<b>คำขอเบิกใหม่ (หลายรายการ)</b> #' + wdNo
+      + '\nจำนวน: ' + batchItems.length + ' รายการ\n' + itemsList
+      + '\nผู้ขอ: ' + session.name
+      + '\nวัตถุประสงค์: ' + (batchData.purpose || '-');
+    sendTelegram(msg);
+
+    return { success: true, message: 'ยื่นคำขอเบิกเรียบร้อย รอการอนุมัติ', withdraw_no: wdNo };
+  } catch(err) {
+    logError('addWithdrawalBatch', err);
+    return { success: false, message: err.message };
+  }
+}
+
 /** getWithdrawals — ดึงคำขอเบิกทั้งหมด (Admin/Staff) หรือของตัวเอง (Employee) */
 function getWithdrawals(token, filters) {
   try {
@@ -640,9 +705,65 @@ function approveWithdrawal(token, wdId, qtyApproved) {
       if (!wd) return { success: false, message: 'ไม่พบคำขอเบิก' };
       if (wd.status !== 'pending') return { success: false, message: 'คำขอนี้ดำเนินการแล้ว' };
 
+      var now = new Date().toISOString();
+      var cfg = getConfig();
+      var threshold = cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT;
+
+      // ===== BATCH APPROVAL =====
+      if (wd.is_batch) {
+        var batchItems = JSON.parse(wd.items_json || '[]');
+        var allItems = getSheetData('Items');
+        // ตรวจสอบสต็อกทุกรายการก่อน
+        for (var k = 0; k < batchItems.length; k++) {
+          var bi = batchItems[k];
+          var bItem = null;
+          for (var l = 0; l < allItems.length; l++) {
+            if (allItems[l].id === bi.item_id) { bItem = allItems[l]; break; }
+          }
+          if (!bItem) return { success: false, message: 'ไม่พบวัสดุ "' + bi.item_name + '"' };
+          if (bi.quantity > bItem.current_stock) return { success: false, message: '"' + bi.item_name + '" สต็อกไม่พอ (คงเหลือ ' + bItem.current_stock + ')' };
+        }
+        // ตัด stock และบันทึก Transaction ทุกรายการ
+        var lowWarnings = [];
+        for (var k = 0; k < batchItems.length; k++) {
+          var bi = batchItems[k];
+          allItems = getSheetData('Items');
+          var bItem = null;
+          for (var l = 0; l < allItems.length; l++) {
+            if (allItems[l].id === bi.item_id) { bItem = allItems[l]; break; }
+          }
+          var stockBefore = bItem.current_stock;
+          var stockAfter = stockBefore - bi.quantity;
+          updateInSheet('Items', bi.item_id, { current_stock: stockAfter });
+          saveToSheet('Transactions', {
+            id: Utilities.getUuid(), type: 'withdraw',
+            item_id: bItem.id, item_name: bItem.name, item_code: bItem.item_code,
+            quantity: bi.quantity, stock_before: stockBefore, stock_after: stockAfter,
+            ref_id: wd.withdraw_no, actor_id: wd.requested_by, actor_name: wd.requested_by_name,
+            actor_role: 'withdraw', approved_by_name: session.name,
+            note: wd.note || '', date: now.split('T')[0]
+          });
+          if (stockAfter <= (bItem.min_stock || threshold)) {
+            lowWarnings.push(bItem.name + ' เหลือ ' + stockAfter + ' ' + bItem.unit);
+          }
+        }
+        updateInSheet('Withdrawals', wdId, {
+          status: 'approved', quantity_approved: batchItems.length,
+          approved_by: session.user_id, approved_by_name: session.name, approved_at: now
+        });
+        var itemsList = batchItems.map(function(b){ return '  - ' + b.item_name + ' x' + b.quantity + ' ' + b.unit; }).join('\n');
+        var msg = '<b>อนุมัติการเบิก (หลายรายการ)</b> #' + wd.withdraw_no
+          + '\n' + itemsList
+          + '\nผู้เบิก: ' + wd.requested_by_name
+          + '\nอนุมัติโดย: ' + session.name
+          + (lowWarnings.length ? '\n<b>คำเตือนสต็อกต่ำ:</b> ' + lowWarnings.join(', ') : '');
+        sendTelegram(msg);
+        return { success: true, message: 'อนุมัติการเบิกเรียบร้อย (' + batchItems.length + ' รายการ)' };
+      }
+
+      // ===== SINGLE ITEM APPROVAL =====
       var qty = parseInt(qtyApproved) || wd.quantity_requested;
 
-      // ดึง item และตัด stock
       var items = getSheetData('Items');
       var item = null;
       for (var j = 0; j < items.length; j++) {
@@ -655,38 +776,20 @@ function approveWithdrawal(token, wdId, qtyApproved) {
       var stockAfter = stockBefore - qty;
       updateInSheet('Items', item.id, { current_stock: stockAfter });
 
-      // อัพเดต Withdrawal
-      var now = new Date().toISOString();
       updateInSheet('Withdrawals', wdId, {
-        status: 'approved',
-        quantity_approved: qty,
-        approved_by: session.user_id,
-        approved_by_name: session.name,
-        approved_at: now
+        status: 'approved', quantity_approved: qty,
+        approved_by: session.user_id, approved_by_name: session.name, approved_at: now
       });
 
-      // บันทึก Transaction
       saveToSheet('Transactions', {
-        id: Utilities.getUuid(),
-        type: 'withdraw',
-        item_id: item.id,
-        item_name: item.name,
-        item_code: item.item_code,
-        quantity: qty,
-        stock_before: stockBefore,
-        stock_after: stockAfter,
-        ref_id: wd.withdraw_no,
-        actor_id: wd.requested_by,
-        actor_name: wd.requested_by_name,
-        actor_role: 'withdraw',
-        approved_by_name: session.name,
-        note: wd.note || '',
-        date: now.split('T')[0]
+        id: Utilities.getUuid(), type: 'withdraw',
+        item_id: item.id, item_name: item.name, item_code: item.item_code,
+        quantity: qty, stock_before: stockBefore, stock_after: stockAfter,
+        ref_id: wd.withdraw_no, actor_id: wd.requested_by, actor_name: wd.requested_by_name,
+        actor_role: 'withdraw', approved_by_name: session.name,
+        note: wd.note || '', date: now.split('T')[0]
       });
 
-      // แจ้งเตือน stock ต่ำ
-      var cfg = getConfig();
-      var threshold = cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT;
       var lowMsg = '';
       if (stockAfter <= (item.min_stock || threshold)) {
         lowMsg = '\n<b>คำเตือน: สต็อกต่ำกว่าขั้นต่ำ</b> เหลือ ' + stockAfter + ' ' + item.unit + ' (ขั้นต่ำ: ' + item.min_stock + ')';
@@ -697,8 +800,7 @@ function approveWithdrawal(token, wdId, qtyApproved) {
         + '\nอนุมัติ: ' + qty + ' ' + item.unit
         + '\nผู้เบิก: ' + wd.requested_by_name
         + '\nสต็อกคงเหลือ: ' + stockAfter + ' ' + item.unit
-        + '\nอนุมัติโดย: ' + session.name
-        + lowMsg;
+        + '\nอนุมัติโดย: ' + session.name + lowMsg;
       sendTelegram(msg);
 
       return { success: true, message: 'อนุมัติการเบิกเรียบร้อย' };

@@ -88,6 +88,9 @@ function escHtml(str) {
   if (!str) return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
+function tryParseJSON(str) {
+  try { return JSON.parse(str) || []; } catch(e) { return []; }
+}
 function togglePass(inputId, btn) {
   var inp = document.getElementById(inputId);
   var isPass = inp.type === 'password';
@@ -1590,12 +1593,19 @@ function buildWithdrawPage() {
     var badgeClass = w.status==='approved'?'badge-approved':w.status==='rejected'?'badge-rejected':'badge-pending';
     var statusLabel = { pending:'รออนุมัติ', approved:'อนุมัติแล้ว', rejected:'ปฏิเสธ' }[w.status]||w.status;
     html += '<tr>';
+    var batchItems = w.is_batch ? tryParseJSON(w.items_json) : null;
     html += '<td class="px-4 py-2.5 font-mono text-xs text-navy-700">' + escHtml(w.withdraw_no) + (w.via_qr?'<span class="ml-1 text-teal-600 text-xs" title="สแกน QR"><i class="fi fi-rr-qr-scan"></i></span>':'') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500">' + formatDate(w.requested_at) + '</td>';
-    html += '<td class="px-4 py-2.5 font-medium text-gray-700 max-w-xs truncate">' + escHtml(w.item_name) + '</td>';
-    html += '<td class="px-4 py-2.5 text-center text-xs"><span class="text-gray-800 font-bold">' + w.quantity_requested + '</span>';
-    if (w.status==='approved') html += '<span class="text-green-600 ml-1">/' + w.quantity_approved + '</span>';
-    html += ' <span class="text-gray-400">' + escHtml(w.unit) + '</span></td>';
+    if (batchItems) {
+      html += '<td class="px-4 py-2.5 text-gray-700"><span class="font-medium">หลายรายการ (' + batchItems.length + ' รายการ)</span>';
+      html += '<div class="mt-1 space-y-0.5">' + batchItems.map(function(b){ return '<p class="text-xs text-gray-400">• ' + escHtml(b.item_name) + ' <span class="font-medium text-gray-600">x' + b.quantity + ' ' + escHtml(b.unit) + '</span></p>'; }).join('') + '</div></td>';
+      html += '<td class="px-4 py-2.5 text-center text-xs"><span class="text-gray-800 font-bold">' + batchItems.length + '</span> <span class="text-gray-400">รายการ</span></td>';
+    } else {
+      html += '<td class="px-4 py-2.5 font-medium text-gray-700 max-w-xs truncate">' + escHtml(w.item_name) + '</td>';
+      html += '<td class="px-4 py-2.5 text-center text-xs"><span class="text-gray-800 font-bold">' + w.quantity_requested + '</span>';
+      if (w.status==='approved') html += '<span class="text-green-600 ml-1">/' + w.quantity_approved + '</span>';
+      html += ' <span class="text-gray-400">' + escHtml(w.unit) + '</span></td>';
+    }
     html += '<td class="px-4 py-2.5 text-xs text-gray-500 max-w-xs truncate">' + escHtml(w.purpose||'-') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-600">' + escHtml(w.requested_by_name||'-') + '</td>';
     html += '<td class="px-4 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span></td>';
@@ -1620,9 +1630,11 @@ function buildWithdrawPage() {
   paged.forEach(function(w) {
     var badgeClass = w.status==='approved'?'badge-approved':w.status==='rejected'?'badge-rejected':'badge-pending';
     var statusLabel = { pending:'รออนุมัติ', approved:'อนุมัติแล้ว', rejected:'ปฏิเสธ' }[w.status]||w.status;
+    var batchMobile = w.is_batch ? tryParseJSON(w.items_json) : null;
     html += '<div class="card p-4 space-y-2">';
     html += '<div class="flex items-start justify-between">';
     html += '<div><p class="font-semibold text-gray-800 text-sm">' + escHtml(w.item_name) + '</p>';
+    if (batchMobile) html += '<div class="mt-1">' + batchMobile.map(function(b){ return '<p class="text-xs text-gray-400">• ' + escHtml(b.item_name) + ' x' + b.quantity + ' ' + escHtml(b.unit) + '</p>'; }).join('') + '</div>';
     html += '<p class="text-xs text-navy-700 font-mono">' + escHtml(w.withdraw_no) + '</p></div>';
     html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span></div>';
     html += '<div class="grid grid-cols-2 gap-1 text-xs text-gray-500">';
@@ -1950,15 +1962,17 @@ function submitMultiWithdraw() {
   if (errMsg) { showError(errMsg); return; }
   if (rows.length === 0) { showError('ไม่พบรายการที่จะยื่น'); return; }
 
-  showConfirm('ยืนยันยื่นคำขอเบิก', 'ยืนยันยื่นคำขอเบิก ' + rows.length + ' รายการ?', function() {
-    showLoading('กำลังยื่นคำขอ ' + rows.length + ' รายการ...');
-    var promises = rows.map(function(d) { return callAPI('addWithdrawal', AUTH.token, d); });
-    Promise.all(promises).then(function(results) {
+  showConfirm('ยืนยันยื่นคำขอเบิก', 'ยืนยันยื่นคำขอเบิก ' + rows.length + ' รายการ (1 ใบเบิก)?', function() {
+    showLoading('กำลังยื่นคำขอ...');
+    var batchPayload = {
+      items: rows.map(function(r){ return { item_id: r.item_id, quantity: r.quantity }; }),
+      purpose: purpose,
+      note: note
+    };
+    callAPI('addWithdrawalBatch', AUTH.token, batchPayload).then(function(res) {
       hideLoading(); closeModal();
-      var ok   = results.filter(function(r){ return r && r.success; });
-      var fail = results.length - ok.length;
-      if (fail > 0) showError('ยื่นสำเร็จ ' + ok.length + ' รายการ ล้มเหลว ' + fail + ' รายการ');
-      else showSuccess('ยื่นคำขอเบิกสำเร็จ ' + ok.length + ' รายการ รอการอนุมัติ');
+      if (res.success) showSuccess('ยื่นคำขอ ' + res.withdraw_no + ' เรียบร้อย (' + rows.length + ' รายการ) รอการอนุมัติ');
+      else showError(res.message);
       _mwSelected = {};
       if (_currentPage === 'withdraw') renderWithdraw();
       else if (_currentPage === 'dashboard') renderDashboard();
@@ -2044,16 +2058,40 @@ function buildApprovePage(filterStatus) {
 
 function openApproveModal(wdId, qty) {
   var wd = _approveData.find(function(w){ return w.id === wdId; });
-  var item = wd && _itemsData.find(function(i){ return i.id === wd.item_id; });
+  if (!wd) return;
+
+  // BATCH
+  if (wd.is_batch) {
+    var batchItems = tryParseJSON(wd.items_json);
+    var body = '<div class="space-y-3">';
+    body += '<p class="text-sm text-gray-600">ผู้ขอ: <b>' + escHtml(wd.requested_by_name) + '</b> • วัตถุประสงค์: ' + escHtml(wd.purpose||'-') + '</p>';
+    body += '<div class="border border-gray-200 rounded-xl overflow-hidden"><table class="w-full text-sm">';
+    body += '<thead class="bg-gray-50 text-xs text-gray-600"><tr><th class="px-3 py-2 text-left">รายการวัสดุ</th><th class="px-3 py-2 text-center">จำนวน</th><th class="px-3 py-2 text-center">หน่วย</th></tr></thead>';
+    body += '<tbody class="divide-y divide-gray-100">';
+    batchItems.forEach(function(b){
+      body += '<tr><td class="px-3 py-2 text-gray-700">' + escHtml(b.item_name) + '</td>'
+            + '<td class="px-3 py-2 text-center font-bold text-gray-800">' + b.quantity + '</td>'
+            + '<td class="px-3 py-2 text-center text-gray-500 text-xs">' + escHtml(b.unit) + '</td></tr>';
+    });
+    body += '</tbody></table></div>';
+    body += '<p class="text-xs text-gray-400">อนุมัติทั้งหมดตามจำนวนที่ขอ</p></div>';
+    var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+      + '<button onclick="doApprove(\'' + wdId + '\')" class="btn-success"><i class="fi fi-rr-check mr-1"></i>ยืนยันอนุมัติ (' + batchItems.length + ' รายการ)</button>';
+    openModal('อนุมัติการเบิก #' + wd.withdraw_no, body, footer);
+    return;
+  }
+
+  // SINGLE
+  var item = _itemsData.find(function(i){ return i.id === wd.item_id; });
   var img = item ? imgUrl(item.image_file_id) : '';
   var imgHtml = img ? '<div class="flex justify-center"><img src="' + img + '" class="w-24 h-24 object-cover rounded-xl border border-gray-200 shadow-sm"></div>' : '';
   var body = '<div class="space-y-4">';
   body += imgHtml;
-  body += '<div class="text-center"><p class="font-semibold text-gray-800">' + escHtml((wd && wd.item_name) || '-') + '</p>';
-  body += '<p class="text-xs text-gray-500">ผู้ขอเบิก: <b>' + escHtml((wd && wd.requested_by_name) || '-') + '</b> • วัตถุประสงค์: ' + escHtml((wd && wd.purpose) || '-') + '</p></div>';
+  body += '<div class="text-center"><p class="font-semibold text-gray-800">' + escHtml(wd.item_name || '-') + '</p>';
+  body += '<p class="text-xs text-gray-500">ผู้ขอเบิก: <b>' + escHtml(wd.requested_by_name || '-') + '</b> • วัตถุประสงค์: ' + escHtml(wd.purpose || '-') + '</p></div>';
   body += '<div><label class="form-label">จำนวนที่อนุมัติ *</label>';
   body += '<input type="number" id="approveQty" value="' + qty + '" min="1" max="' + qty + '" class="form-input">';
-  body += '<p class="text-xs text-gray-400 mt-1">จำนวนที่ขอ: ' + qty + ' ' + escHtml((wd && wd.unit) || '') + '</p></div></div>';
+  body += '<p class="text-xs text-gray-400 mt-1">จำนวนที่ขอ: ' + qty + ' ' + escHtml(wd.unit || '') + '</p></div></div>';
   var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
     + '<button onclick="doApprove(\'' + wdId + '\')" class="btn-success"><i class="fi fi-rr-check mr-1"></i>ยืนยันอนุมัติ</button>';
   openModal('อนุมัติการเบิก', body, footer);
