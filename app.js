@@ -2099,14 +2099,25 @@ function openApproveModal(wdId, qty) {
 }
 
 function doApprove(wdId) {
-  var qty = parseInt((document.getElementById('approveQty')||{}).value||0);
-  if (!qty || qty <= 0) { showError('กรุณาระบุจำนวน'); return; }
+  var wd = (_approveData.find(function(w){ return w.id === wdId; }))
+        || (_wdData.find(function(w){ return w.id === wdId; }));
+  var isBatch = wd && wd.is_batch;
+  var qty;
+  if (isBatch) {
+    qty = wd.quantity_requested;
+  } else {
+    qty = parseInt((document.getElementById('approveQty')||{}).value||0);
+    if (!qty || qty <= 0) { showError('กรุณาระบุจำนวน'); return; }
+  }
   closeModal();
   showLoading('กำลังอนุมัติ...');
   callAPI('approveWithdrawal', AUTH.token, wdId, qty).then(function(res) {
     hideLoading();
-    if (res.success) { showSuccess(res.message); renderApprove(); }
-    else showError(res.message);
+    if (res.success) {
+      showSuccess(res.message);
+      if (_currentPage === 'approve') renderApprove();
+      else if (_currentPage === 'withdraw') renderWithdraw();
+    } else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
