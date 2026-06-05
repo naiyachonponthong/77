@@ -2057,7 +2057,8 @@ function buildApprovePage(filterStatus) {
 }
 
 function openApproveModal(wdId, qty) {
-  var wd = _approveData.find(function(w){ return w.id === wdId; });
+  var wd = (_approveData.find(function(w){ return w.id === wdId; }))
+        || (_wdData.find(function(w){ return w.id === wdId; }));
   if (!wd) return;
 
   // BATCH
