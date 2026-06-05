@@ -238,9 +238,10 @@ function initializeSheets() {
     });
   }
 
-  // Seed Items ถ้ายังว่าง
-  if (getSheetData('Items').length === 0) {
-    var year = new Date().getFullYear();
+  // Seed Items เฉพาะครั้งแรก (ตรวจจาก Config flag items_seeded)
+  var cfg = getSheetData('Config');
+  var cfgRow = cfg.length > 0 ? cfg[0] : {};
+  if (!cfgRow.items_seeded && getSheetData('Items').length === 0) {
     SEED_ITEMS.forEach(function(item, idx) {
       var code = 'SUP-' + String(idx + 1).padStart(3, '0');
       saveToSheet('Items', {
@@ -257,6 +258,10 @@ function initializeSheets() {
         active: true
       });
     });
+    // บันทึก flag ว่า seed แล้ว ไม่ให้ seed ซ้ำอีก
+    if (cfg.length > 0) {
+      updateInSheet('Config', cfgRow.id, { items_seeded: true });
+    }
   }
 
   return { status: 'success', message: 'Sheets พร้อมใช้งาน' };
