@@ -426,7 +426,7 @@ function updateItem(token, itemId, itemData) {
   try {
     var session = validateSession(token);
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
-    var updated = updateInSheet('Items', itemId, {
+    var fields = {
       name: itemData.name,
       size: itemData.size,
       unit: itemData.unit,
@@ -434,7 +434,12 @@ function updateItem(token, itemId, itemData) {
       min_stock: parseInt(itemData.min_stock),
       description: itemData.description,
       image_file_id: itemData.image_file_id || ''
-    });
+    };
+    // อัพเดตสต็อกตั้งต้น (คงเหลือ) เฉพาะเมื่อส่งค่ามา
+    if (itemData.current_stock !== undefined && itemData.current_stock !== null && itemData.current_stock !== '') {
+      fields.current_stock = parseInt(itemData.current_stock);
+    }
+    var updated = updateInSheet('Items', itemId, fields);
     if (!updated) return { success: false, message: 'ไม่พบรายการ' };
     return { success: true, message: 'แก้ไขเรียบร้อย' };
   } catch(err) {
