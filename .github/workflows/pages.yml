@@ -38,3 +38,24 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+
+      - name: Smoke test deployed site
+        run: |
+          sleep 10
+          BODY=$(curl -fsSL "${{ steps.deployment.outputs.page_url }}")
+          echo "$BODY" | grep -q "v=${GITHUB_SHA}" || (echo "::error::deployed page does not reference build id ${GITHUB_SHA}" && exit 1)
+
+      - name: Notify Telegram on failure
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d chat_id="${TELEGRAM_CHAT_ID}" \
+              -d parse_mode=HTML \
+              -d text="<b>Deploy ล้มเหลว</b> repo naiyachonponthong/77 commit ${GITHUB_SHA:0:7}%0Aดูรายละเอียด: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          else
+            echo "::warning::TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID secrets not set, skipping notification"
+          fi

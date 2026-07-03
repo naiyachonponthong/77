@@ -83,6 +83,7 @@ function doGet(e) {
         case 'addItem':             result = addItem(args[0], args[1]); break;
         case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
         case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
+        case 'getAuditLog':         result = getAuditLog(args[0], args[1]); break;
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
         case 'getReceives':         result = getReceives(args[0], args[1]); break;
         case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
@@ -191,7 +192,8 @@ function initializeSheets() {
     'Receives':     'receive_json',
     'Withdrawals':  'withdrawal_json',
     'Transactions': 'transaction_json',
-    'Errors':       'error_json'
+    'Errors':       'error_json',
+    'AuditLog':     'audit_json'
   };
 
   Object.keys(required).forEach(function(name) {
@@ -426,6 +428,8 @@ function updateItem(token, itemId, itemData) {
   try {
     var session = validateSession(token);
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    var before = getSheetData('Items').filter(function(i){ return i.id === itemId; })[0];
+    if (!before) return { success: false, message: 'ไม่พบรายการ' };
     var fields = {
       name: itemData.name,
       size: itemData.size,
@@ -441,6 +445,18 @@ function updateItem(token, itemId, itemData) {
     }
     var updated = updateInSheet('Items', itemId, fields);
     if (!updated) return { success: false, message: 'ไม่พบรายการ' };
+
+    // Audit log — บันทึกเฉพาะฟิลด์ที่เปลี่ยนจริง
+    ['current_stock', 'min_stock'].forEach(function(f) {
+      if (fields[f] !== undefined && fields[f] !== before[f]) {
+        saveToSheet('AuditLog', {
+          item_id: itemId, item_name: updated.name, field: f,
+          old_value: before[f], new_value: fields[f],
+          actor_id: session.user_id, actor_name: session.name
+        });
+      }
+    });
+
     return { success: true, message: 'แก้ไขเรียบร้อย' };
   } catch(err) {
     logError('updateItem', err);
@@ -455,6 +471,18 @@ function deleteItem(token, itemId) {
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
     updateInSheet('Items', itemId, { active: false });
     return { success: true, message: 'ลบรายการเรียบร้อย' };
+  } catch(err) { return { success: false, message: err.message }; }
+}
+
+/** getAuditLog — ดึงประวัติการแก้ไขวัสดุ (Admin) */
+function getAuditLog(token, itemId) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    var data = getSheetData('AuditLog');
+    if (itemId) data = data.filter(function(a){ return a.item_id === itemId; });
+    data.sort(function(a,b){ return b.created_at > a.created_at ? 1 : -1; });
+    return { success: true, data: data };
   } catch(err) { return { success: false, message: err.message }; }
 }
 
@@ -586,6 +614,7 @@ function addWithdrawal(token, wdData) {
       item_id: item.id,
       item_name: item.name,
       item_code: item.item_code,
+      item_category: item.category || '',
       quantity_requested: qty,
       quantity_approved: 0,
       unit: item.unit,
@@ -637,10 +666,11 @@ function addWithdrawalBatch(token, batchData) {
       var qty = parseInt(d.quantity);
       if (!qty || qty <= 0) return { success: false, message: 'จำนวนไม่ถูกต้องสำหรับ "' + item.name + '"' };
       if (qty > item.current_stock) return { success: false, message: '"' + item.name + '" สต็อกไม่พอ (คงเหลือ ' + item.current_stock + ')' };
-      batchItems.push({ item_id: item.id, item_name: item.name, item_code: item.item_code, quantity: qty, unit: item.unit });
+      batchItems.push({ item_id: item.id, item_name: item.name, item_code: item.item_code, quantity: qty, unit: item.unit, category: item.category || '' });
     }
 
     if (batchItems.length === 0) return { success: false, message: 'ไม่มีรายการ' };
+    var categories = batchItems.map(function(b){ return b.category; }).filter(function(c,i,arr){ return c && arr.indexOf(c) === i; });
 
     var wdNo = generateRunningNumber('WD', 'Withdrawals');
     var wd = {
@@ -648,6 +678,7 @@ function addWithdrawalBatch(token, batchData) {
       withdraw_no: wdNo,
       is_batch: true,
       items_json: JSON.stringify(batchItems),
+      categories_json: JSON.stringify(categories),
       item_id: 'batch',
       item_name: 'หลายรายการ (' + batchItems.length + ' รายการ)',
       item_code: '',
@@ -682,6 +713,23 @@ function addWithdrawalBatch(token, batchData) {
   }
 }
 
+/** getWithdrawalCategories — คืนหมวดหมู่ของรายการเบิก (รองรับทั้งเบิกเดี่ยวและ batch) */
+function getWithdrawalCategories(wd) {
+  if (wd.is_batch) {
+    try { return JSON.parse(wd.categories_json || '[]'); } catch(e) { return []; }
+  }
+  return wd.item_category ? [wd.item_category] : [];
+}
+
+/** getUserAllowedCategories — คืนรายการหมวดหมู่ที่ผู้ใช้มีสิทธิ์อนุมัติ ([] = ทุกหมวดหมู่) */
+function getUserAllowedCategories(userId) {
+  var users = getSheetData('Users');
+  for (var i = 0; i < users.length; i++) {
+    if (users[i].id === userId) return users[i].allowed_categories || [];
+  }
+  return [];
+}
+
 /** getWithdrawals — ดึงคำขอเบิกทั้งหมด (Admin/Staff) หรือของตัวเอง (Employee) */
 function getWithdrawals(token, filters) {
   try {
@@ -690,6 +738,14 @@ function getWithdrawals(token, filters) {
     var data = getSheetData('Withdrawals');
     if (session.role === 'employee') {
       data = data.filter(function(w){ return w.requested_by === session.user_id; });
+    } else if (session.role === 'admin') {
+      var allowed = getUserAllowedCategories(session.user_id);
+      if (allowed.length > 0) {
+        data = data.filter(function(w) {
+          var cats = getWithdrawalCategories(w);
+          return cats.length === 0 || cats.some(function(c){ return allowed.indexOf(c) !== -1; });
+        });
+      }
     }
     if (filters && filters.status && filters.status !== 'all') {
       data = data.filter(function(w){ return w.status === filters.status; });
@@ -714,6 +770,13 @@ function approveWithdrawal(token, wdId, qtyApproved) {
       }
       if (!wd) return { success: false, message: 'ไม่พบคำขอเบิก' };
       if (wd.status !== 'pending') return { success: false, message: 'คำขอนี้ดำเนินการแล้ว' };
+
+      var allowedCats = getUserAllowedCategories(session.user_id);
+      if (allowedCats.length > 0) {
+        var wdCats = getWithdrawalCategories(wd);
+        var inScope = wdCats.length === 0 || wdCats.some(function(c){ return allowedCats.indexOf(c) !== -1; });
+        if (!inScope) return { success: false, message: 'คุณไม่มีสิทธิ์อนุมัติหมวดหมู่นี้' };
+      }
 
       var now = new Date().toISOString();
       var cfg = getConfig();
@@ -993,7 +1056,7 @@ function getUsers(token) {
     var session = validateSession(token);
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
     var users = getSheetData('Users').map(function(u) {
-      return { id:u.id, username:u.username, name:u.name, role:u.role, email:u.email, phone:u.phone||'', active:u.active, last_login:u.last_login||'', avatar:u.avatar||'' };
+      return { id:u.id, username:u.username, name:u.name, role:u.role, email:u.email, phone:u.phone||'', active:u.active, last_login:u.last_login||'', avatar:u.avatar||'', allowed_categories:u.allowed_categories||[] };
     });
     return { success: true, data: users };
   } catch(err) { return { success: false, message: err.message }; }
@@ -1018,6 +1081,7 @@ function addUser(token, userData) {
       phone: userData.phone || '',
       avatar: '',
       telegram_chat_id: '',
+      allowed_categories: userData.allowed_categories || [],
       active: true,
       last_login: ''
     });
@@ -1033,7 +1097,11 @@ function updateUser(token, userId, userData) {
       return { success: false, message: 'ไม่มีสิทธิ์' };
     }
     var update = { name: userData.name, email: userData.email, phone: userData.phone };
-    if (session.role === 'admin') { update.role = userData.role; update.active = userData.active; }
+    if (session.role === 'admin') {
+      update.role = userData.role;
+      update.active = userData.active;
+      update.allowed_categories = userData.allowed_categories || [];
+    }
     if (userData.avatar) update.avatar = userData.avatar;
     updateInSheet('Users', userId, update);
     return { success: true, message: 'แก้ไขข้อมูลเรียบร้อย' };
@@ -1245,6 +1313,31 @@ function testTelegram(token) {
     sendTelegram('<b>ทดสอบการแจ้งเตือน</b>\nระบบวัสดุสิ้นเปลืองทำงานปกติ\nเวลา: ' + new Date().toLocaleString('th-TH'));
     return { success: true, message: 'ส่งข้อความทดสอบแล้ว' };
   } catch(err) { return { success: false, message: err.message }; }
+}
+
+/**
+ * checkLowStockAndNotify — แจ้งเตือน Telegram เมื่อมีวัสดุใกล้หมด/หมด
+ * เรียกทุกวันผ่าน time-driven trigger (ตั้งค่าใน Apps Script > Triggers เอง)
+ * ไม่ต้องใช้ token เพราะรันจาก trigger ไม่ใช่จาก client
+ */
+function checkLowStockAndNotify() {
+  try {
+    var cfg = getConfig();
+    if (!cfg.telegram_enabled) return;
+    var threshold = cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT;
+    var items = getSheetData('Items').filter(function(i){ return i.active !== false; });
+    var lowItems = items.filter(function(i){ return (i.current_stock||0) <= (i.min_stock || threshold); });
+    if (lowItems.length === 0) return;
+
+    lowItems.sort(function(a,b){ return (a.current_stock||0) - (b.current_stock||0); });
+    var lines = lowItems.slice(0, 20).map(function(i) {
+      return '  - ' + i.name + ': เหลือ ' + (i.current_stock||0) + ' ' + i.unit + ' (ขั้นต่ำ ' + (i.min_stock||threshold) + ')';
+    });
+    var msg = '<b>แจ้งเตือนสต็อกใกล้หมด/หมด</b> (' + lowItems.length + ' รายการ)\n'
+      + lines.join('\n')
+      + (lowItems.length > 20 ? '\n  ...และอีก ' + (lowItems.length - 20) + ' รายการ' : '');
+    sendTelegram(msg);
+  } catch(err) { logError('checkLowStockAndNotify', err); }
 }
 
 // ============================================================

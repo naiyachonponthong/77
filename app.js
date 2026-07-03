@@ -1107,11 +1107,29 @@ function showItemDetailModal(itemId) {
       + '</div>';
   }
 
+  body += '<div id="itemAuditLog" class="pt-1"></div>';
   body += '</div>';
 
   var footer = '<button onclick="closeModal()" class="btn-secondary">ปิด</button>'
     + '<button onclick="openWithdrawModal(\'' + item.id + '\')" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>เบิกวัสดุ</button>';
   openModal('รายละเอียดวัสดุ', body, footer);
+  loadItemAuditLog(item.id);
+}
+function loadItemAuditLog(itemId) {
+  callAPI('getAuditLog', AUTH.token, itemId).then(function(res) {
+    var el = document.getElementById('itemAuditLog');
+    if (!el || !res.success || !res.data || !res.data.length) return;
+    var fieldLabel = { current_stock: 'สต็อกเริ่มต้น', min_stock: 'สต็อกขั้นต่ำ' };
+    var html = '<p class="text-xs font-semibold text-gray-500 mb-2">ประวัติการแก้ไข</p><div class="space-y-1.5">';
+    res.data.slice(0, 10).forEach(function(a) {
+      html += '<div class="flex items-center justify-between text-xs bg-gray-50 rounded-lg px-3 py-2">'
+        + '<span class="text-gray-600">' + escHtml(fieldLabel[a.field] || a.field) + ': ' + escHtml(String(a.old_value)) + ' &rarr; <b>' + escHtml(String(a.new_value)) + '</b></span>'
+        + '<span class="text-gray-400 whitespace-nowrap ml-2">' + escHtml(a.actor_name||'-') + ' &middot; ' + formatDate(a.created_at) + '</span>'
+        + '</div>';
+    });
+    html += '</div>';
+    el.innerHTML = html;
+  }).catch(function(){});
 }
 
 // ===== QR CODE =====
@@ -2691,7 +2709,8 @@ function buildUsersPage() {
     html += '<div class="w-8 h-8 rounded-xl bg-navy-100 flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-user text-navy-600 text-sm"></i></div>';
     html += '<span class="font-medium text-gray-700">' + escHtml(u.name||'-') + '</span></div></td>';
     html += '<td class="px-4 py-2.5 font-mono text-xs text-gray-500">' + escHtml(u.username) + '</td>';
-    html += '<td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + roleColor + '">' + (ROLE_LABELS[u.role]||u.role) + '</span></td>';
+    html += '<td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + roleColor + '">' + (ROLE_LABELS[u.role]||u.role) + '</span>'
+      + (u.allowed_categories && u.allowed_categories.length ? '<span class="block text-xs text-gray-400 mt-0.5" title="' + escHtml(u.allowed_categories.join(', ')) + '">จำกัด ' + u.allowed_categories.length + ' หมวดหมู่</span>' : '') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500">' + escHtml(u.email||'-') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-400">' + formatDateTime(u.last_login) + '</td>';
     html += '<td class="px-4 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + (u.active!==false?'bg-green-100 text-green-700':'bg-red-100 text-red-700') + '">' + (u.active!==false?'ใช้งาน':'ระงับ') + '</span></td>';
@@ -2725,37 +2744,60 @@ function buildUsersPage() {
   renderPagination('usersPagination', _usersData.length, _usersPage, function(p){ _usersPage=p; buildUsersPage(); });
 }
 
-function userFormHTML(user) {
+function userFormHTML(user, categories) {
   user = user || {};
+  categories = categories || [];
   var roleOpts = ['admin','staff','employee'].map(function(r){ return '<option value="' + r + '"' + (user.role===r?' selected':'') + '>' + (ROLE_LABELS[r]||r) + '</option>'; }).join('');
+  var allowedCats = user.allowed_categories || [];
+  var catCheckboxes = categories.map(function(c) {
+    var checked = allowedCats.indexOf(c) !== -1 ? 'checked' : '';
+    return '<label class="flex items-center gap-1.5 text-xs bg-gray-50 rounded-lg px-2.5 py-1.5"><input type="checkbox" class="uAllowedCat" value="' + escHtml(c) + '" ' + checked + '> ' + escHtml(c) + '</label>';
+  }).join('');
+  var catSection = '<div id="uCatSection" class="sm:col-span-2" style="display:' + (user.role==='admin' ? 'block' : 'none') + '">'
+    + '<label class="form-label">จำกัดหมวดหมู่ที่อนุมัติได้ (ไม่เลือก = อนุมัติได้ทุกหมวดหมู่)</label>'
+    + '<div class="flex flex-wrap gap-1.5">' + (catCheckboxes || '<span class="text-xs text-gray-400">ไม่มีหมวดหมู่ในระบบ</span>') + '</div></div>';
   return '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">'
     + fieldHTML('ชื่อ-นามสกุล *', 'uName', 'text', user.name||'', 'sm:col-span-2')
     + fieldHTML('Username *', 'uUsername', 'text', user.username||'')
     + (!user.id ? '<div><label class="form-label">Password *</label><div class="relative"><input type="password" id="uPassword" class="form-input pr-10" placeholder="รหัสผ่าน"><button type="button" onclick="togglePass(\'uPassword\',this)" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"><i class="fi fi-rr-eye text-sm"></i></button></div></div>' : '')
     + fieldHTML('อีเมล', 'uEmail', 'email', user.email||'')
     + fieldHTML('เบอร์โทร', 'uPhone', 'text', user.phone||'')
-    + '<div><label class="form-label">บทบาท *</label><select id="uRole" class="form-input">' + roleOpts + '</select></div>'
+    + '<div><label class="form-label">บทบาท *</label><select id="uRole" class="form-input" onchange="document.getElementById(\'uCatSection\').style.display = this.value===\'admin\'?\'block\':\'none\'">' + roleOpts + '</select></div>'
+    + catSection
     + '</div>';
+}
+function readAllowedCategories() {
+  return Array.prototype.slice.call(document.querySelectorAll('.uAllowedCat:checked')).map(function(el){ return el.value; });
 }
 
 function openAddUserModal() {
-  var body   = userFormHTML({});
-  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
-    + '<button onclick="submitAddUser()" class="btn-primary"><i class="fi fi-rr-user-add mr-1"></i>เพิ่มผู้ใช้</button>';
-  openModal('เพิ่มผู้ใช้งานใหม่', body, footer);
+  showLoading('กำลังโหลด...');
+  callAPI('getItems', AUTH.token).then(function(res) {
+    hideLoading();
+    var categories = getCategoryList(res.data||[]);
+    var body   = userFormHTML({}, categories);
+    var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+      + '<button onclick="submitAddUser()" class="btn-primary"><i class="fi fi-rr-user-add mr-1"></i>เพิ่มผู้ใช้</button>';
+    openModal('เพิ่มผู้ใช้งานใหม่', body, footer);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
 function openEditUserModal(id) {
   var u = _usersData.find(function(x){ return x.id === id; });
   if (!u) return;
-  var body   = userFormHTML(u);
-  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
-    + '<button onclick="submitEditUser(\'' + id + '\')" class="btn-primary"><i class="fi fi-rr-disk mr-1"></i>บันทึก</button>';
-  openModal('แก้ไขผู้ใช้งาน: ' + u.name, body, footer);
+  showLoading('กำลังโหลด...');
+  callAPI('getItems', AUTH.token).then(function(res) {
+    hideLoading();
+    var categories = getCategoryList(res.data||[]);
+    var body   = userFormHTML(u, categories);
+    var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+      + '<button onclick="submitEditUser(\'' + id + '\')" class="btn-primary"><i class="fi fi-rr-disk mr-1"></i>บันทึก</button>';
+    openModal('แก้ไขผู้ใช้งาน: ' + u.name, body, footer);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
 function submitAddUser() {
-  var data = { name:(document.getElementById('uName')||{}).value||'', username:(document.getElementById('uUsername')||{}).value||'', password:(document.getElementById('uPassword')||{}).value||'', email:(document.getElementById('uEmail')||{}).value||'', phone:(document.getElementById('uPhone')||{}).value||'', role:(document.getElementById('uRole')||{}).value||'employee' };
+  var data = { name:(document.getElementById('uName')||{}).value||'', username:(document.getElementById('uUsername')||{}).value||'', password:(document.getElementById('uPassword')||{}).value||'', email:(document.getElementById('uEmail')||{}).value||'', phone:(document.getElementById('uPhone')||{}).value||'', role:(document.getElementById('uRole')||{}).value||'employee', allowed_categories: readAllowedCategories() };
   if (!data.name.trim() || !data.username.trim() || !data.password) { showError('กรุณากรอกข้อมูลที่จำเป็น'); return; }
   showLoading('กำลังบันทึก...');
   callAPI('addUser', AUTH.token, data).then(function(res) {
@@ -2766,7 +2808,7 @@ function submitAddUser() {
 }
 
 function submitEditUser(id) {
-  var data = { name:(document.getElementById('uName')||{}).value||'', email:(document.getElementById('uEmail')||{}).value||'', phone:(document.getElementById('uPhone')||{}).value||'', role:(document.getElementById('uRole')||{}).value||'employee', active:true };
+  var data = { name:(document.getElementById('uName')||{}).value||'', email:(document.getElementById('uEmail')||{}).value||'', phone:(document.getElementById('uPhone')||{}).value||'', role:(document.getElementById('uRole')||{}).value||'employee', active:true, allowed_categories: readAllowedCategories() };
   if (!data.name.trim()) { showError('กรุณากรอกชื่อ'); return; }
   showLoading('กำลังบันทึก...');
   callAPI('updateUser', AUTH.token, id, data).then(function(res) {
