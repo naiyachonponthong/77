@@ -575,6 +575,15 @@ var _itemsCacheTime = 0;
 var _configLogoFileId = null;
 var ITEMS_CACHE_TTL = 30000; // 30 วินาที
 
+/** ปรับ current_stock ของรายการใน _itemsData ทันทีโดยไม่ต้องรอ refetch */
+function adjustItemStock(itemId, delta) {
+  var item = _itemsData.find(function(i){ return i.id === itemId; });
+  if (item) item.current_stock = (item.current_stock || 0) + delta;
+}
+function removeItemFromCache(itemId) {
+  _itemsData = _itemsData.filter(function(i){ return i.id !== itemId; });
+}
+
 function renderItems() {
   if (AUTH.user.role !== 'admin') { loadPage('stock'); return; }
   showLoading('โหลดรายการวัสดุ...');
@@ -972,7 +981,7 @@ function submitAddItem() {
   showLoading('กำลังบันทึก...');
   callAPI('addItem', AUTH.token, data).then(function(res) {
     hideLoading(); closeModal();
-    if (res.success) { showSuccess(res.message); renderItems(); }
+    if (res.success) { showSuccess(res.message); _itemsCacheTime = 0; renderItems(); }
     else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
@@ -982,7 +991,7 @@ function submitEditItem(id) {
   showLoading('กำลังบันทึก...');
   callAPI('updateItem', AUTH.token, id, data).then(function(res) {
     hideLoading(); closeModal();
-    if (res.success) { showSuccess(res.message); renderItems(); }
+    if (res.success) { showSuccess(res.message); _itemsCacheTime = 0; renderItems(); }
     else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
@@ -1041,7 +1050,7 @@ function deleteItemConfirm(id, name) {
     showLoading('กำลังลบ...');
     callAPI('deleteItem', AUTH.token, id).then(function(res) {
       hideLoading();
-      if (res.success) { showSuccess(res.message); renderItems(); }
+      if (res.success) { showSuccess(res.message); removeItemFromCache(id); renderItems(); }
       else showError(res.message);
     }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
   }, 'ลบ');
@@ -1351,7 +1360,7 @@ function submitReceive() {
   showLoading('กำลังบันทึก...');
   callAPI('addReceive', AUTH.token, { item_id:itemId, quantity:qty, date:date, note:note }).then(function(res) {
     hideLoading(); closeModal();
-    if (res.success) { showSuccess(res.message); renderReceive(); }
+    if (res.success) { showSuccess(res.message); adjustItemStock(itemId, qty); renderReceive(); }
     else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
@@ -2115,6 +2124,12 @@ function doApprove(wdId) {
     hideLoading();
     if (res.success) {
       showSuccess(res.message);
+      if (isBatch) {
+        var batchItems = JSON.parse(wd.items_json || '[]');
+        batchItems.forEach(function(bi){ adjustItemStock(bi.item_id, -bi.quantity); });
+      } else {
+        adjustItemStock(wd.item_id, -qty);
+      }
       if (_currentPage === 'approve') renderApprove();
       else if (_currentPage === 'withdraw') renderWithdraw();
     } else showError(res.message);
