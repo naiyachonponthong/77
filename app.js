@@ -54,10 +54,11 @@ function showConfirm(title, text, cb, confirmText) {
 }
 
 // ===== MODAL =====
-function openModal(title, bodyHtml, footerHtml) {
+function openModal(title, bodyHtml, footerHtml, sizeClass) {
   document.getElementById('modalTitle').textContent = title;
   document.getElementById('modalBody').innerHTML = bodyHtml;
   document.getElementById('modalFooter').innerHTML = footerHtml || '';
+  document.getElementById('modalBox').className = 'bg-white rounded-2xl shadow-2xl w-full max-h-[90vh] flex flex-col ' + (sizeClass || 'max-w-lg');
   document.getElementById('modalOverlay').classList.remove('hidden');
 }
 function closeModal() {
@@ -834,7 +835,7 @@ function openAddItemModal() {
   var body = itemFormHTML({});
   var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
     + '<button onclick="submitAddItem()" class="btn-primary"><i class="fi fi-rr-plus mr-1"></i>เพิ่มวัสดุ</button>';
-  openModal('เพิ่มรายการวัสดุใหม่', body, footer);
+  openModal('เพิ่มรายการวัสดุใหม่', body, footer, 'max-w-2xl');
 }
 function openEditItemModal(id) {
   var item = _itemsData.find(function(i){ return i.id === id; });
@@ -843,7 +844,7 @@ function openEditItemModal(id) {
   var body = itemFormHTML(item);
   var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
     + '<button onclick="submitEditItem(\'' + id + '\')" class="btn-primary"><i class="fi fi-rr-disk mr-1"></i>บันทึก</button>';
-  openModal('แก้ไขรายการวัสดุ', body, footer);
+  openModal('แก้ไขรายการวัสดุ', body, footer, 'max-w-2xl');
 }
 function itemFormHTML(item) {
   var fid = _itemImageFileId || item.image_file_id || '';
@@ -1282,7 +1283,7 @@ function openAddItemInlineForReceive(prefillBarcode) {
   var body = itemFormHTML({ barcode: prefillBarcode || '' });
   var footer = '<button onclick="_openRecSelect()" class="btn-secondary"><i class="fi fi-rr-arrow-left mr-1"></i>กลับ</button>'
     + '<button onclick="submitAddItemForReceive()" class="btn-primary"><i class="fi fi-rr-plus mr-1"></i>เพิ่มวัสดุ</button>';
-  openModal('เพิ่มวัสดุใหม่', body, footer);
+  openModal('เพิ่มวัสดุใหม่', body, footer, 'max-w-2xl');
 }
 function submitAddItemForReceive() {
   var data = readItemForm();
