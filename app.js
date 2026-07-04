@@ -860,15 +860,24 @@ function itemFormHTML(item) {
     + fieldHTML('หน่วย *', 'itemUnit', 'text', item.unit||'')
     + barcodeFieldHTML(item.barcode||'')
     + fieldHTML('หมวดหมู่', 'itemCategory', 'text', item.category||'วัสดุทำความสะอาด')
+    + fieldHTML('ราคาต่อหน่วย', 'itemPrice', 'number', item.price||0, '', '0.01')
+    + fieldHTML('ผู้จำหน่าย/ซัพพลายเออร์', 'itemSupplier', 'text', item.supplier||'')
     + fieldHTML('สต็อกเริ่มต้น', 'itemStock', 'number', item.current_stock||0)
     + fieldHTML('สต็อกขั้นต่ำ', 'itemMinStock', 'number', item.min_stock||5)
+    + fieldHTML('ตำแหน่งจัดเก็บ', 'itemLocation', 'text', item.storage_location||'', 'sm:col-span-2')
+    + textareaFieldHTML('รายละเอียด/หมายเหตุ', 'itemDescription', item.description||'', 'sm:col-span-2')
     + imgSection
     + '</div>';
 }
-function fieldHTML(label, id, type, value, extra) {
+function fieldHTML(label, id, type, value, extra, step) {
   return '<div class="' + (extra||'') + '">'
     + '<label class="form-label">' + escHtml(label) + '</label>'
-    + '<input type="' + type + '" id="' + id + '" value="' + escHtml(String(value)) + '" class="form-input"></div>';
+    + '<input type="' + type + '" id="' + id + '"' + (step ? ' step="' + step + '" min="0"' : '') + ' value="' + escHtml(String(value)) + '" class="form-input"></div>';
+}
+function textareaFieldHTML(label, id, value, extra) {
+  return '<div class="' + (extra||'') + '">'
+    + '<label class="form-label">' + escHtml(label) + '</label>'
+    + '<textarea id="' + id + '" rows="2" class="form-input">' + escHtml(value||'') + '</textarea></div>';
 }
 function barcodeFieldHTML(value) {
   return '<div><label class="form-label">บาร์โค้ด</label>'
@@ -905,6 +914,10 @@ function readItemForm() {
     name: name, size: (document.getElementById('itemSize')||{}).value||'',
     unit: unit, category: (document.getElementById('itemCategory')||{}).value||'',
     barcode: (document.getElementById('itemBarcode')||{}).value||'',
+    price: parseFloat((document.getElementById('itemPrice')||{}).value)||0,
+    supplier: (document.getElementById('itemSupplier')||{}).value||'',
+    storage_location: (document.getElementById('itemLocation')||{}).value||'',
+    description: (document.getElementById('itemDescription')||{}).value||'',
     current_stock: parseInt((document.getElementById('itemStock')||{}).value)||0,
     min_stock: parseInt((document.getElementById('itemMinStock')||{}).value)||5,
     image_file_id: (document.getElementById('itemImageFileId')||{}).value||_itemImageFileId||''
@@ -941,9 +954,13 @@ function removeItemImage() {
   var unit = (document.getElementById('itemUnit')||{}).value||'';
   var barcode = (document.getElementById('itemBarcode')||{}).value||'';
   var cat  = (document.getElementById('itemCategory')||{}).value||'';
+  var price = (document.getElementById('itemPrice')||{}).value||0;
+  var supplier = (document.getElementById('itemSupplier')||{}).value||'';
+  var location = (document.getElementById('itemLocation')||{}).value||'';
+  var description = (document.getElementById('itemDescription')||{}).value||'';
   var stock = (document.getElementById('itemStock')||{}).value||0;
   var min   = (document.getElementById('itemMinStock')||{}).value||5;
-  var fakeItem = {name:name, size:size, unit:unit, barcode:barcode, category:cat, current_stock:stock, min_stock:min, image_file_id:''};
+  var fakeItem = {name:name, size:size, unit:unit, barcode:barcode, category:cat, price:price, supplier:supplier, storage_location:location, description:description, current_stock:stock, min_stock:min, image_file_id:''};
   var body = itemFormHTML(fakeItem);
   document.getElementById('modalBody').innerHTML = body;
 }
@@ -998,6 +1015,14 @@ function showItemDetailModal(itemId) {
     + '<span class="text-xs text-gray-400">ขั้นต่ำ: ' + item.min_stock + ' ' + item.unit + '</span>'
     + '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + sClass + '">' + sLabel + '</span>'
     + '</div></div>';
+
+  if (item.price || item.supplier || item.storage_location) {
+    body += '<div class="grid grid-cols-2 gap-3">';
+    if (item.price) body += '<div class="bg-gray-50 rounded-xl p-3 text-center"><p class="text-xs text-gray-400 mb-1">ราคาต่อหน่วย</p><p class="text-sm font-semibold text-gray-700">' + Number(item.price).toLocaleString('th-TH', {minimumFractionDigits:2}) + ' บาท</p></div>';
+    if (item.storage_location) body += '<div class="bg-gray-50 rounded-xl p-3 text-center"><p class="text-xs text-gray-400 mb-1">ตำแหน่งจัดเก็บ</p><p class="text-sm font-semibold text-gray-700">' + escHtml(item.storage_location) + '</p></div>';
+    if (item.supplier) body += '<div class="bg-gray-50 rounded-xl p-3 text-center col-span-2"><p class="text-xs text-gray-400 mb-1">ผู้จำหน่าย/ซัพพลายเออร์</p><p class="text-sm font-semibold text-gray-700">' + escHtml(item.supplier) + '</p></div>';
+    body += '</div>';
+  }
 
   if (item.description) {
     body += '<div class="bg-gray-50 rounded-xl p-3"><p class="text-xs text-gray-400 mb-1">หมายเหตุ / รายละเอียด</p><p class="text-sm text-gray-700">' + escHtml(item.description) + '</p></div>';
