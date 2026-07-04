@@ -1235,19 +1235,49 @@ function buildReceivePage() {
 
 function openReceiveModal(itemId) {
   if (itemId) { openReceiveDetailModal(itemId); return; }
+  _openRecSelect();
+}
+function _openRecSelect() {
   var body = '<div class="space-y-3">'
     + '<div><label class="form-label">ยิงบาร์โค้ด</label>'
     + '<div class="relative"><i class="fi fi-rr-barcode-read absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
     + '<input type="text" id="recItemBarcode" placeholder="ยิงบาร์โค้ดเพื่อค้นหาวัสดุ..." onkeydown="handleRecBarcodeScan(event)" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div></div>'
-    + '<div><label class="form-label">เลือกวัสดุ *</label>'
+    + '<div class="flex items-center justify-between">'
+    + '<label class="form-label mb-0">เลือกวัสดุ *</label>'
+    + '<button type="button" onclick="openAddItemInlineForReceive()" class="text-xs text-navy-600 hover:underline font-medium flex items-center gap-1"><i class="fi fi-rr-plus"></i>ไม่พบ? เพิ่มวัสดุใหม่</button>'
+    + '</div>'
     + '<div class="relative"><i class="fi fi-rr-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
-    + '<input type="text" id="recItemSearch" placeholder="ค้นหาวัสดุ..." onkeyup="filterRecItemList()" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div></div>'
+    + '<input type="text" id="recItemSearch" placeholder="ค้นหาวัสดุ..." onkeyup="filterRecItemList()" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div>'
     + '<div id="recItemList" class="max-h-72 overflow-y-auto space-y-1">' + buildRecItemList(_itemsData) + '</div>'
     + '</div>';
   openModal('เลือกวัสดุที่ต้องการรับเข้า', body, '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>');
 }
+function openAddItemInlineForReceive(prefillBarcode) {
+  _itemImageFileId = null;
+  var body = itemFormHTML({ barcode: prefillBarcode || '' });
+  var footer = '<button onclick="_openRecSelect()" class="btn-secondary"><i class="fi fi-rr-arrow-left mr-1"></i>กลับ</button>'
+    + '<button onclick="submitAddItemForReceive()" class="btn-primary"><i class="fi fi-rr-plus mr-1"></i>เพิ่มวัสดุ</button>';
+  openModal('เพิ่มวัสดุใหม่', body, footer);
+}
+function submitAddItemForReceive() {
+  var data = readItemForm();
+  if (!data) return;
+  showLoading('กำลังบันทึก...');
+  callAPI('addItem', AUTH.token, data).then(function(res) {
+    hideLoading();
+    if (res.success) {
+      _itemsData.push(res.data);
+      _itemsCacheTime = Date.now();
+      showSuccess(res.message);
+      openReceiveDetailModal(res.data.id);
+    } else showError(res.message);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
+}
 function buildRecItemList(data) {
-  if (data.length === 0) return '<p class="text-center text-sm text-gray-400 py-4">ไม่พบรายการ</p>';
+  if (data.length === 0) {
+    return '<div class="text-center py-6"><p class="text-sm text-gray-400 mb-3">ไม่พบรายการที่ค้นหา</p>'
+      + '<button onclick="openAddItemInlineForReceive()" class="btn-primary btn-sm"><i class="fi fi-rr-plus mr-1"></i>เพิ่มวัสดุใหม่</button></div>';
+  }
   return data.map(function(i) {
     var imgUrlSrc = imgUrl(i.image_file_id);
     var imgHtml = imgUrlSrc ? '<img src="' + imgUrlSrc + '" class="w-9 h-9 object-cover rounded-xl border border-gray-200 flex-shrink-0">' : '<div class="w-9 h-9 bg-navy-100 rounded-xl flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-box-open-full text-navy-700 text-sm"></i></div>';
@@ -1271,9 +1301,14 @@ function handleRecBarcodeScan(e) {
   var input = document.getElementById('recItemBarcode');
   var code = (input||{}).value||'';
   if (!code.trim()) return;
-  var item = _itemsData.find(function(i){ return (i.barcode||'') === code.trim(); });
+  var scannedCode = code.trim();
+  var item = _itemsData.find(function(i){ return (i.barcode||'') === scannedCode; });
   if (item) { closeModal(); openReceiveDetailModal(item.id); }
-  else { showError('ไม่พบวัสดุที่มีบาร์โค้ดนี้'); if (input) input.value = ''; }
+  else {
+    showConfirm('ไม่พบวัสดุ', 'ไม่พบวัสดุที่มีบาร์โค้ด "' + scannedCode + '" ต้องการเพิ่มวัสดุใหม่หรือไม่?', function() {
+      openAddItemInlineForReceive(scannedCode);
+    }, 'เพิ่มวัสดุใหม่');
+  }
 }
 function openReceiveDetailModal(itemId) {
   var item = _itemsData.find(function(i){ return i.id === itemId; });
