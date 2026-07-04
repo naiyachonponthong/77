@@ -146,6 +146,17 @@
 /* Swal custom */
 .swal2-popup { font-family: 'Sarabun', sans-serif !important; border-radius: 1rem !important; }
 
+/* Manual page */
+.manual-nav .nav-link { display:flex; align-items:center; gap:0.5rem; color:#4b5563; border-radius:0.75rem; padding:0.5rem 0.875rem; font-size:0.8125rem; text-decoration:none; transition: background 0.15s, color 0.15s; }
+.manual-nav .nav-link:hover { background:#eef1ff; color: var(--navy-700); }
+.manual-nav .nav-link.active { background: var(--navy-700); color:#fff; font-weight:600; }
+.step-badge { display:inline-flex; align-items:center; justify-content:center; width:1.75rem; height:1.75rem; border-radius:9999px; background: var(--navy-700); color:#fff; font-size:0.75rem; font-weight:700; flex-shrink:0; }
+.step-row { display:flex; gap:0.875rem; align-items:flex-start; padding:0.625rem 0; border-bottom:1px dashed #e5e7eb; }
+.step-row:last-child { border-bottom:none; }
+.tip-box { background:#eef1ff; border-left:4px solid var(--navy-700); border-radius:0 0.5rem 0.5rem 0; padding:0.75rem 1rem; }
+.warn-box { background:#fef3c7; border-left:4px solid #d97706; border-radius:0 0.5rem 0.5rem 0; padding:0.75rem 1rem; }
+.toc-sticky { position: sticky; top: 1rem; }
+
 /* Utility colors that Tailwind CDN might need config for */
 .bg-navy-50  { background-color: var(--navy-50); }
 .bg-navy-100 { background-color: var(--navy-100); }

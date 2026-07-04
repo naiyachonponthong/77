@@ -233,7 +233,7 @@ function loadPage(page) {
     dashboard:'ภาพรวมระบบ', stock:'สต็อกคงเหลือ', items:'รายการวัสดุ',
     receive:'รับวัสดุเข้าคลัง', stocktake:'นับสต็อก', printqr:'พิมพ์ QR สติ๊กเกอร์', withdraw:'เบิกวัสดุ', approve:'อนุมัติการเบิก',
     transactions:'ประวัติเคลื่อนไหว', reports:'รายงาน',
-    users:'จัดการผู้ใช้งาน', settings:'ตั้งค่าระบบ', profile:'โปรไฟล์'
+    users:'จัดการผู้ใช้งาน', settings:'ตั้งค่าระบบ', profile:'โปรไฟล์', manual:'คู่มือการใช้งาน'
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
   document.getElementById('pageBreadcrumb').textContent = 'ระบบวัสดุสิ้นเปลือง / ' + (titles[page] || page);
@@ -255,6 +255,7 @@ function loadPage(page) {
   else if (page === 'users')        renderUsers();
   else if (page === 'settings')     renderSettings();
   else if (page === 'profile')      renderProfile();
+  else if (page === 'manual')       renderManual();
 }
 
 function toggleSidebar() {
@@ -600,6 +601,8 @@ function buildItemsPage() {
   html += '<div class="relative"><i class="fi fi-rr-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>';
   html += '<input type="text" id="itemSearch" placeholder="ค้นหาวัสดุ..." value="' + escHtml(_itemsFilter.search) + '"';
   html += ' onkeyup="debounceItemFilter()" class="pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500 w-48"></div>';
+  html += '<div class="relative"><i class="fi fi-rr-barcode-read absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>';
+  html += '<input type="text" id="itemBarcodeSearch" placeholder="ยิงบาร์โค้ดค้นหา..." onkeydown="handleItemBarcodeScan(event)" class="pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500 w-48"></div>';
   html += '<select id="itemCatFilter" onchange="applyItemFilter()" class="border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-navy-500">';
   html += '<option value="all">ทุกหมวดหมู่</option>';
   cats.forEach(function(c){ html += '<option value="' + escHtml(c) + '" ' + (_itemsFilter.category===c?'selected':'') + '>' + escHtml(c) + '</option>'; });
@@ -696,6 +699,18 @@ function getCategoryList(data) {
 }
 function paginate(data, page) {
   return data.slice((page-1)*ITEMS_PER_PAGE, page*ITEMS_PER_PAGE);
+}
+
+function handleItemBarcodeScan(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  var input = document.getElementById('itemBarcodeSearch');
+  var code = (input||{}).value||'';
+  if (!code.trim()) return;
+  var item = _itemsData.find(function(i){ return (i.barcode||'') === code.trim(); });
+  if (input) input.value = '';
+  if (item) showItemDetailModal(item.id);
+  else showError('ไม่พบวัสดุที่มีบาร์โค้ดนี้');
 }
 
 var _filterTimer;
@@ -843,6 +858,7 @@ function itemFormHTML(item) {
     + fieldHTML('ชื่อวัสดุ *', 'itemName', 'text', item.name||'', 'sm:col-span-2')
     + fieldHTML('ขนาดบรรจุ', 'itemSize', 'text', item.size||'')
     + fieldHTML('หน่วย *', 'itemUnit', 'text', item.unit||'')
+    + barcodeFieldHTML(item.barcode||'')
     + fieldHTML('หมวดหมู่', 'itemCategory', 'text', item.category||'วัสดุทำความสะอาด')
     + fieldHTML('สต็อกเริ่มต้น', 'itemStock', 'number', item.current_stock||0)
     + fieldHTML('สต็อกขั้นต่ำ', 'itemMinStock', 'number', item.min_stock||5)
@@ -853,6 +869,11 @@ function fieldHTML(label, id, type, value, extra) {
   return '<div class="' + (extra||'') + '">'
     + '<label class="form-label">' + escHtml(label) + '</label>'
     + '<input type="' + type + '" id="' + id + '" value="' + escHtml(String(value)) + '" class="form-input"></div>';
+}
+function barcodeFieldHTML(value) {
+  return '<div><label class="form-label">บาร์โค้ด</label>'
+    + '<div class="relative"><i class="fi fi-rr-barcode-read absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
+    + '<input type="text" id="itemBarcode" value="' + escHtml(value) + '" placeholder="ยิงบาร์โค้ดหรือกรอกเลข..." class="form-input pl-9"></div></div>';
 }
 
 function submitAddItem() {
@@ -883,6 +904,7 @@ function readItemForm() {
   return {
     name: name, size: (document.getElementById('itemSize')||{}).value||'',
     unit: unit, category: (document.getElementById('itemCategory')||{}).value||'',
+    barcode: (document.getElementById('itemBarcode')||{}).value||'',
     current_stock: parseInt((document.getElementById('itemStock')||{}).value)||0,
     min_stock: parseInt((document.getElementById('itemMinStock')||{}).value)||5,
     image_file_id: (document.getElementById('itemImageFileId')||{}).value||_itemImageFileId||''
@@ -917,10 +939,11 @@ function removeItemImage() {
   var name = (document.getElementById('itemName')||{}).value||'';
   var size = (document.getElementById('itemSize')||{}).value||'';
   var unit = (document.getElementById('itemUnit')||{}).value||'';
+  var barcode = (document.getElementById('itemBarcode')||{}).value||'';
   var cat  = (document.getElementById('itemCategory')||{}).value||'';
   var stock = (document.getElementById('itemStock')||{}).value||0;
   var min   = (document.getElementById('itemMinStock')||{}).value||5;
-  var fakeItem = {name:name, size:size, unit:unit, category:cat, current_stock:stock, min_stock:min, image_file_id:''};
+  var fakeItem = {name:name, size:size, unit:unit, barcode:barcode, category:cat, current_stock:stock, min_stock:min, image_file_id:''};
   var body = itemFormHTML(fakeItem);
   document.getElementById('modalBody').innerHTML = body;
 }
@@ -1211,16 +1234,53 @@ function buildReceivePage() {
 }
 
 function openReceiveModal(itemId) {
+  if (itemId) { openReceiveDetailModal(itemId); return; }
+  var body = '<div class="space-y-3">'
+    + '<div><label class="form-label">ยิงบาร์โค้ด</label>'
+    + '<div class="relative"><i class="fi fi-rr-barcode-read absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
+    + '<input type="text" id="recItemBarcode" placeholder="ยิงบาร์โค้ดเพื่อค้นหาวัสดุ..." onkeydown="handleRecBarcodeScan(event)" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div></div>'
+    + '<div><label class="form-label">เลือกวัสดุ *</label>'
+    + '<div class="relative"><i class="fi fi-rr-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
+    + '<input type="text" id="recItemSearch" placeholder="ค้นหาวัสดุ..." onkeyup="filterRecItemList()" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div></div>'
+    + '<div id="recItemList" class="max-h-72 overflow-y-auto space-y-1">' + buildRecItemList(_itemsData) + '</div>'
+    + '</div>';
+  openModal('เลือกวัสดุที่ต้องการรับเข้า', body, '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>');
+}
+function buildRecItemList(data) {
+  if (data.length === 0) return '<p class="text-center text-sm text-gray-400 py-4">ไม่พบรายการ</p>';
+  return data.map(function(i) {
+    var imgUrlSrc = imgUrl(i.image_file_id);
+    var imgHtml = imgUrlSrc ? '<img src="' + imgUrlSrc + '" class="w-9 h-9 object-cover rounded-xl border border-gray-200 flex-shrink-0">' : '<div class="w-9 h-9 bg-navy-100 rounded-xl flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-box-open-full text-navy-700 text-sm"></i></div>';
+    return '<div onclick="selectRecItem(\'' + i.id + '\')" class="flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer hover:bg-navy-50 border border-transparent hover:border-navy-200 transition">'
+      + imgHtml
+      + '<div class="flex-1 min-w-0"><p class="text-sm font-medium text-gray-700 truncate">' + escHtml(i.name) + '</p>'
+      + '<p class="text-xs text-gray-400">' + escHtml(i.item_code) + ' • ' + escHtml(i.size||'') + ' • คงเหลือ ' + i.current_stock + ' ' + i.unit + '</p></div></div>';
+  }).join('');
+}
+function filterRecItemList() {
+  var q = ((document.getElementById('recItemSearch')||{}).value||'').toLowerCase();
+  var filtered = _itemsData.filter(function(i){
+    return !q || i.name.toLowerCase().includes(q) || (i.item_code||'').toLowerCase().includes(q) || (i.barcode||'').toLowerCase().includes(q);
+  });
+  document.getElementById('recItemList').innerHTML = buildRecItemList(filtered);
+}
+function selectRecItem(id) { closeModal(); openReceiveDetailModal(id); }
+function handleRecBarcodeScan(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  var input = document.getElementById('recItemBarcode');
+  var code = (input||{}).value||'';
+  if (!code.trim()) return;
+  var item = _itemsData.find(function(i){ return (i.barcode||'') === code.trim(); });
+  if (item) { closeModal(); openReceiveDetailModal(item.id); }
+  else { showError('ไม่พบวัสดุที่มีบาร์โค้ดนี้'); if (input) input.value = ''; }
+}
+function openReceiveDetailModal(itemId) {
+  var item = _itemsData.find(function(i){ return i.id === itemId; });
+  if (!item) { showError('ไม่พบรายการวัสดุ'); return; }
   var body = '<div class="space-y-4">';
-  if (!itemId) {
-    body += '<div><label class="form-label">เลือกวัสดุ *</label><select id="recItemId" class="form-input">';
-    _itemsData.forEach(function(i){ body += '<option value="' + i.id + '">' + escHtml(i.name) + ' (คงเหลือ ' + i.current_stock + ' ' + i.unit + ')</option>'; });
-    body += '</select></div>';
-  } else {
-    var item = _itemsData.find(function(i){ return i.id === itemId; });
-    body += '<input type="hidden" id="recItemId" value="' + itemId + '">';
-    body += '<p class="text-sm text-gray-600">รายการ: <b>' + escHtml(item.name) + '</b> (คงเหลือ ' + item.current_stock + ' ' + item.unit + ')</p>';
-  }
+  body += '<input type="hidden" id="recItemId" value="' + itemId + '">';
+  body += '<p class="text-sm text-gray-600">รายการ: <b>' + escHtml(item.name) + '</b> (คงเหลือ ' + item.current_stock + ' ' + item.unit + ')</p>';
   body += fieldHTML('จำนวนที่รับ *', 'recQty', 'number', 1);
   body += fieldHTML('วันที่', 'recDate', 'date', new Date().toISOString().split('T')[0]);
   body += '<div class="sm:col-span-2"><label class="form-label">หมายเหตุ</label><textarea id="recNote" class="form-input" rows="2"></textarea></div>';
@@ -2667,6 +2727,191 @@ function stopQRScanner() {
   if (_qrScanner) {
     _qrScanner.stop().then(function() { _qrScanner = null; }).catch(function() { _qrScanner = null; });
   }
+}
+
+// ===== MANUAL / คู่มือการใช้งาน =====
+function renderManual() {
+  var isAdmin = AUTH.user.role === 'admin';
+  var toc = [
+    ['m-overview','fi-rr-info','ภาพรวมระบบ'],
+    ['m-login','fi-rr-sign-in','การเข้าสู่ระบบ'],
+    ['m-roles','fi-rr-users','บทบาทผู้ใช้'],
+    ['m-stock','fi-rr-layers','สต็อก & รายการวัสดุ'],
+    ['m-receive','fi-rr-inbox-in','รับวัสดุเข้าคลัง'],
+    ['m-stocktake','fi-rr-clipboard-list','นับสต็อก'],
+    ['m-printqr','fi-rr-print','พิมพ์ QR สติ๊กเกอร์'],
+    ['m-withdraw','fi-rr-inbox-out','เบิกวัสดุ & อนุมัติ'],
+    ['m-transactions','fi-rr-time-past','ประวัติเคลื่อนไหว'],
+    ['m-reports','fi-rr-chart-histogram','รายงาน'],
+    ['m-admin','fi-rr-settings','ผู้ใช้งาน & ตั้งค่าระบบ'],
+    ['m-profile','fi-rr-user','โปรไฟล์ของฉัน'],
+    ['m-faq','fi-rr-interrogation','คำถามที่พบบ่อย']
+  ];
+  var tocLinks = toc.map(function(t) {
+    return '<a href="#' + t[0] + '" class="nav-link"><i class="fi ' + t[1] + '"></i>' + t[2] + '</a>';
+  }).join('');
+
+  var html = '<div class="fade-in flex flex-col lg:flex-row gap-6 items-start">';
+
+  html += '<div class="hidden lg:block w-64 flex-shrink-0"><div class="toc-sticky card p-3">';
+  html += '<p class="font-bold text-gray-700 text-sm mb-2 px-1 flex items-center gap-2"><i class="fi fi-rr-list text-navy-600"></i>สารบัญ</p>';
+  html += '<nav class="manual-nav flex flex-col gap-0.5">' + tocLinks + '</nav>';
+  html += '</div></div>';
+
+  html += '<div class="lg:hidden w-full">';
+  html += '<details class="card p-3"><summary class="font-bold text-gray-700 text-sm cursor-pointer flex items-center gap-2"><i class="fi fi-rr-list text-navy-600"></i>สารบัญ</summary>';
+  html += '<nav class="manual-nav flex flex-col gap-0.5 mt-2">' + tocLinks + '</nav></details></div>';
+
+  html += '<div class="flex-1 min-w-0 w-full space-y-4">';
+
+  // 1. ภาพรวมระบบ
+  html += manualSection('m-overview', 'fi-rr-info', '1. ภาพรวมระบบ',
+    '<p class="mb-3">ระบบวัสดุสิ้นเปลือง ใช้บริหารจัดการคลังวัสดุตั้งแต่การรับเข้า เบิกจ่าย นับสต็อก ไปจนถึงการอนุมัติและออกรายงาน รองรับการใช้งานผ่านมือถือและคอมพิวเตอร์</p>'
+    + '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">'
+    + manualFeatureCard('fi-rr-box-alt', 'บริหารคลังวัสดุ', 'รับเข้า นับสต็อก พิมพ์ QR ติดฉลาก')
+    + manualFeatureCard('fi-rr-inbox-out', 'เบิก-อนุมัติ', 'พนักงานยื่นคำขอ เจ้าหน้าที่/ผู้ดูแลอนุมัติ')
+    + manualFeatureCard('fi-rr-chart-histogram', 'ติดตาม & รายงาน', 'ดูภาพรวม แจ้งเตือนสต็อกต่ำ ออกรายงาน')
+    + '</div>'
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>ทุกหน้าจอเข้าถึงได้จากเมนูด้านซ้าย และมีช่อง <strong>ค้นหาวัสดุเร็ว</strong> ที่แถบด้านบนของทุกหน้า</div>');
+
+  // 2. การเข้าสู่ระบบ
+  html += manualSection('m-login', 'fi-rr-sign-in', '2. การเข้าสู่ระบบ',
+    manualStep(1, 'เลือกประเภทผู้ใช้', 'เลือกแท็บ ผู้ดูแลระบบ / เจ้าหน้าที่ / พนักงาน ให้ตรงกับบัญชีของท่าน')
+    + manualStep(2, 'กรอกชื่อผู้ใช้และรหัสผ่าน', 'กรอกข้อมูลแล้วกด "เข้าสู่ระบบ" หรือกด Enter ที่ช่องรหัสผ่าน')
+    + manualStep(3, 'ลืมรหัสผ่าน', 'กด "ลืมรหัสผ่าน?" ใต้ปุ่มเข้าสู่ระบบ แล้วกรอกอีเมลที่ลงทะเบียนไว้เพื่อรับรหัสผ่านชั่วคราว')
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>หลังเข้าสู่ระบบสามารถกดชื่อ/ไอคอนโปรไฟล์มุมขวาบน หรือด้านล่างเมนู เพื่อ<strong>ออกจากระบบ</strong>ได้ทุกเมื่อ</div>');
+
+  // 3. บทบาทผู้ใช้
+  html += manualSection('m-roles', 'fi-rr-users', '3. บทบาทผู้ใช้',
+    '<p class="text-sm text-gray-500 mb-3">ระบบมี 3 บทบาท แต่ละบทบาทเห็นเมนูและทำได้ต่างกัน</p>'
+    + '<div class="overflow-x-auto"><table class="w-full text-sm border border-gray-200 rounded-xl overflow-hidden">'
+    + '<thead class="bg-navy-700 text-white text-xs"><tr><th class="px-3 py-2 text-left">บทบาท</th><th class="px-3 py-2 text-left">เมนูที่เห็น</th><th class="px-3 py-2 text-left">สิทธิ์เด่น</th></tr></thead>'
+    + '<tbody class="divide-y divide-gray-100">'
+    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-navy-100 text-navy-700">ผู้ดูแลระบบ</span></td>'
+    + '<td class="px-3 py-2">ทุกเมนู</td><td class="px-3 py-2">จัดการรายการวัสดุ, อนุมัติ/ปฏิเสธการเบิก, จัดการผู้ใช้งาน, ตั้งค่าระบบ</td></tr>'
+    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">เจ้าหน้าที่</span></td>'
+    + '<td class="px-3 py-2">คลังวัสดุ (ยกเว้นรายการวัสดุ), การเบิก, รายงาน</td><td class="px-3 py-2">รับวัสดุเข้าคลัง, นับสต็อก, พิมพ์ QR, ยื่นคำขอเบิก, ดูรายงาน</td></tr>'
+    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">พนักงาน</span></td>'
+    + '<td class="px-3 py-2">ภาพรวมระบบ, สต็อกคงเหลือ, เบิกวัสดุ, ประวัติเคลื่อนไหว</td><td class="px-3 py-2">ดูสต็อก, ยื่นคำขอเบิกวัสดุ, ดูประวัติของตนเอง</td></tr>'
+    + '</tbody></table></div>'
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>เฉพาะ <strong>ผู้ดูแลระบบ</strong> เท่านั้นที่อนุมัติ/ปฏิเสธคำขอเบิกและจัดการผู้ใช้งาน/ตั้งค่าระบบได้</div>');
+
+  // 4. สต็อก & รายการวัสดุ
+  html += manualSection('m-stock', 'fi-rr-layers', '4. สต็อกคงเหลือ & รายการวัสดุ',
+    '<p class="text-sm text-gray-500 mb-2">เมนู <strong>สต็อกคงเหลือ</strong> แสดงจำนวนวัสดุปัจจุบันทุกรายการ พร้อมสถานะสี:</p>'
+    + '<div class="flex flex-wrap gap-2 mb-3">'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium stock-ok">ปกติ</span>'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium stock-low">ใกล้หมด</span>'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium stock-critical">วิกฤต/หมด</span>'
+    + '</div>'
+    + '<p class="text-sm text-gray-500 mb-1">เมื่อมีวัสดุใกล้หมด ระบบจะแสดง<strong>ตัวเลขแจ้งเตือนสีเหลือง</strong>กำกับที่เมนู "สต็อกคงเหลือ" ในแถบด้านซ้ายโดยอัตโนมัติ</p>'
+    + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">รายการวัสดุ <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
+    + '<p class="text-sm text-gray-500">เมนู <strong>รายการวัสดุ</strong> ใช้เพิ่ม/แก้ไข/ปิดใช้งานวัสดุ กำหนดรหัสวัสดุ ชื่อ หน่วยนับ หมวดหมู่ รูปภาพ และจุดสั่งซื้อ (จุดที่ถือว่าใกล้หมด)</p>');
+
+  // 5. รับวัสดุเข้าคลัง
+  html += manualSection('m-receive', 'fi-rr-inbox-in', '5. รับวัสดุเข้าคลัง',
+    '<p class="text-sm text-gray-500 mb-2">ใช้เมื่อมีวัสดุใหม่ส่งเข้าคลัง (เจ้าหน้าที่ขึ้นไป)</p>'
+    + manualStep(1, 'เปิดเมนู "รับวัสดุเข้าคลัง"', 'เลือกวัสดุจากรายการที่มีอยู่')
+    + manualStep(2, 'กรอกจำนวนที่รับเข้า', 'ระบุจำนวนและรายละเอียดที่เกี่ยวข้อง (เช่น ผู้ส่ง/เลขที่เอกสาร ถ้ามี)')
+    + manualStep(3, 'บันทึก', 'ระบบจะบวกยอดเข้าสต็อกทันที และบันทึกลงประวัติเคลื่อนไหวประเภท "รับเข้า"'));
+
+  // 6. นับสต็อก
+  html += manualSection('m-stocktake', 'fi-rr-clipboard-list', '6. นับสต็อก',
+    '<p class="text-sm text-gray-500 mb-2">ใช้ตรวจนับวัสดุจริงเทียบกับยอดในระบบ (สต็อกจริง)</p>'
+    + manualStep(1, 'เปิดเมนู "นับสต็อก"', 'จะเห็นตารางวัสดุทั้งหมดพร้อมยอด "ระบบ" ปัจจุบัน')
+    + manualStep(2, 'กรอกจำนวนที่นับได้จริง', 'ในช่อง "นับจริง" ของแต่ละแถว ระบบจะคำนวณ "ผลต่าง" ให้ทันที (สีเขียว = เกิน, สีแดง = ขาด)')
+    + manualStep(3, 'กด "บันทึกการปรับยอด"', 'ระบบจะปรับยอดสต็อกเฉพาะรายการที่มีผลต่างเท่านั้น')
+    + '<div class="warn-box mt-3 text-sm"><i class="fi fi-rr-triangle-warning text-amber-600 mr-1"></i>การปรับยอดจากหน้านี้จะเขียนทับยอดสต็อกปัจจุบันทันที ควรตรวจนับให้ถูกต้องก่อนบันทึก</div>');
+
+  // 7. พิมพ์ QR สติ๊กเกอร์
+  html += manualSection('m-printqr', 'fi-rr-print', '7. พิมพ์ QR สติ๊กเกอร์',
+    '<p class="text-sm text-gray-500 mb-2">สร้างและพิมพ์สติ๊กเกอร์ QR สำหรับติดที่ตัววัสดุ/ชั้นวาง เพื่อให้พนักงานสแกนยื่นคำขอเบิกได้รวดเร็ว</p>'
+    + manualStep(1, 'ค้นหา/กรองวัสดุ', 'ใช้ช่องค้นหาหรือกรองตามหมวดหมู่เพื่อเลือกวัสดุที่ต้องการ')
+    + manualStep(2, 'เลือกวัสดุที่ต้องการพิมพ์', 'เลือกได้ทีละหลายรายการ')
+    + manualStep(3, 'พิมพ์', 'ระบบจะสร้าง QR Code ต่อรายการสำหรับสั่งพิมพ์')
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>การสแกน QR ที่ติดไว้จะเปิดหน้าเบิกวัสดุพร้อมเลือกวัสดุนั้นให้อัตโนมัติ (รายการที่เบิกผ่าน QR จะมีไอคอน <i class="fi fi-rr-qr-scan"></i> กำกับในประวัติ)</div>');
+
+  // 8. เบิกวัสดุ & อนุมัติ
+  html += manualSection('m-withdraw', 'fi-rr-inbox-out', '8. เบิกวัสดุ & อนุมัติการเบิก',
+    '<h4 class="font-semibold text-gray-700 text-sm mb-2">8.1 ยื่นคำขอเบิก (ทุกบทบาท)</h4>'
+    + manualStep(1, 'เปิดเมนู "เบิกวัสดุ" แล้วกด "ยื่นคำขอเบิก"', 'หรือสแกน QR สติ๊กเกอร์ที่ติดบนวัสดุ')
+    + manualStep(2, 'เลือกวัสดุและระบุจำนวน + วัตถุประสงค์', 'กดยืนยันเพื่อส่งคำขอ สถานะเริ่มต้นคือ "รออนุมัติ"')
+    + manualStep(3, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
+    + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">8.2 อนุมัติการเบิก <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
+    + '<p class="text-sm text-gray-500 mb-2">เมนู <strong>อนุมัติการเบิก</strong> จะมีตัวเลขสีแดงกำกับจำนวนคำขอที่รออนุมัติ</p>'
+    + manualStep(1, 'เปิดคำขอที่สถานะ "รออนุมัติ"', 'ตรวจสอบจำนวนที่ขอและวัตถุประสงค์')
+    + manualStep(2, 'กด "อนุมัติ"', 'ระบุจำนวนที่อนุมัติจริง (อาจน้อยกว่าที่ขอได้) ระบบจะตัดสต็อกทันทีเมื่ออนุมัติ')
+    + manualStep(3, 'หรือกด "ปฏิเสธ"', 'ระบุเหตุผลการปฏิเสธ (ถ้ามี) — สต็อกจะไม่ถูกตัด')
+    + '<div class="warn-box mt-3 text-sm"><i class="fi fi-rr-triangle-warning text-amber-600 mr-1"></i>การอนุมัติจะตัดยอดสต็อกทันทีและไม่สามารถยกเลิกย้อนหลังได้ ควรตรวจสอบยอดคงเหลือก่อนกดอนุมัติ</div>');
+
+  // 9. ประวัติเคลื่อนไหว
+  html += manualSection('m-transactions', 'fi-rr-time-past', '9. ประวัติเคลื่อนไหว',
+    '<p class="text-sm text-gray-500 mb-2">เมนู <strong>ประวัติเคลื่อนไหว</strong> รวมทุกความเคลื่อนไหวของสต็อกไว้ในที่เดียว แบ่งเป็น 2 ประเภทหลัก:</p>'
+    + '<div class="flex flex-wrap gap-2">'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium badge-receive">รับเข้า</span>'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium badge-withdraw">เบิกออก</span>'
+    + '</div>'
+    + '<p class="text-sm text-gray-500 mt-2">ใช้สำหรับตรวจสอบย้อนหลังว่าใครรับ/เบิกวัสดุใด จำนวนเท่าไร และเมื่อใด</p>');
+
+  // 10. รายงาน
+  html += manualSection('m-reports', 'fi-rr-chart-histogram', '10. รายงาน',
+    '<p class="text-sm text-gray-500 mb-2">เมนู <strong>รายงาน</strong> (เจ้าหน้าที่ขึ้นไป) สรุปข้อมูลการรับ-เบิกวัสดุในรูปแบบกราฟและตาราง เพื่อใช้วางแผนสั่งซื้อและติดตามการใช้วัสดุ</p>'
+    + '<div class="tip-box text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>สามารถส่งออกข้อมูลเป็นไฟล์ Excel เพื่อนำไปวิเคราะห์หรือจัดเก็บเพิ่มเติมได้</div>');
+
+  // 11. ผู้ใช้งาน & ตั้งค่าระบบ
+  html += manualSection('m-admin', 'fi-rr-settings', '11. ผู้ใช้งาน & ตั้งค่าระบบ',
+    '<p class="text-xs text-gray-400 mb-3">เมนูในกลุ่มนี้แสดงเฉพาะบทบาท "ผู้ดูแลระบบ"</p>'
+    + '<h4 class="font-semibold text-gray-700 text-sm mb-2">11.1 ผู้ใช้งาน</h4>'
+    + '<p class="text-sm text-gray-500 mb-3">เพิ่ม/แก้ไขบัญชีผู้ใช้ กำหนดชื่อผู้ใช้ รหัสผ่านเริ่มต้น และบทบาท (ผู้ดูแลระบบ / เจ้าหน้าที่ / พนักงาน)</p>'
+    + '<h4 class="font-semibold text-gray-700 text-sm mb-2">11.2 ตั้งค่าระบบ</h4>'
+    + '<p class="text-sm text-gray-500">ปรับชื่อระบบ โลโก้ และค่าตั้งต้นอื่น ๆ ของระบบ</p>');
+
+  // 12. โปรไฟล์
+  html += manualSection('m-profile', 'fi-rr-user', '12. โปรไฟล์ของฉัน',
+    '<p class="text-sm text-gray-500 mb-2">คลิกชื่อ/ไอคอนผู้ใช้ที่มุมล่างซ้ายของแถบเมนู (หรือไอคอนโปรไฟล์มุมขวาบน) เพื่อเข้าหน้าโปรไฟล์</p>'
+    + '<ul class="list-disc pl-5 text-sm text-gray-500 space-y-1">'
+    + '<li>แก้ไขชื่อ-นามสกุล อีเมล เบอร์โทรศัพท์</li>'
+    + '<li>ตั้งค่า Telegram Chat ID เพื่อรับการแจ้งเตือนส่วนตัว</li>'
+    + '<li>เปลี่ยนรหัสผ่านด้วยตนเอง</li>'
+    + '</ul>');
+
+  // 13. FAQ
+  html += manualSection('m-faq', 'fi-rr-interrogation', '13. คำถามที่พบบ่อย',
+    manualFaq('ลืมรหัสผ่านต้องทำอย่างไร?', 'กด "ลืมรหัสผ่าน?" ที่หน้าเข้าสู่ระบบ แล้วกรอกอีเมลที่ลงทะเบียนไว้เพื่อรับรหัสผ่านชั่วคราว')
+    + manualFaq('เบิกวัสดุแล้วสถานะ "รออนุมัติ" ค้างนานทำอย่างไร?', 'ติดต่อผู้ดูแลระบบให้ตรวจสอบที่เมนู "อนุมัติการเบิก" หรือหากคำขอเป็นของตนเองและยังรออนุมัติ สามารถกด "ยกเลิก" แล้วยื่นใหม่ได้')
+    + manualFaq('ทำไมไม่เห็นเมนู "รายการวัสดุ" หรือ "จัดการระบบ"?', 'เมนูเหล่านี้จำกัดสิทธิ์เฉพาะบทบาท "ผู้ดูแลระบบ" เท่านั้น หากจำเป็นต้องใช้งานให้ติดต่อผู้ดูแลระบบเพื่อขอสิทธิ์')
+    + manualFaq('ตัวเลขสีแดง/เหลืองที่เมนูคืออะไร?', 'สีแดงที่เมนู "อนุมัติการเบิก" คือจำนวนคำขอที่รออนุมัติ ส่วนสีเหลืองที่เมนู "สต็อกคงเหลือ" คือจำนวนวัสดุที่ใกล้หมด/หมดสต็อก')
+    + manualFaq('พิมพ์ QR แล้วใช้งานอย่างไร?', 'นำสติ๊กเกอร์ไปติดที่ตัววัสดุหรือชั้นวาง เมื่อต้องการเบิกให้ใช้กล้องสแกน QR ในหน้าเบิกวัสดุ ระบบจะเลือกวัสดุนั้นให้อัตโนมัติ'));
+
+  html += '</div></div>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+function manualSection(id, icon, title, bodyHtml) {
+  return '<div class="card overflow-hidden" id="' + id + '">'
+    + '<div class="bg-navy-700 text-white px-5 py-3 flex items-center gap-2">'
+    + '<i class="fi ' + icon + '"></i><h3 class="font-bold text-sm">' + title + '</h3></div>'
+    + '<div class="card-body text-sm text-gray-700">' + bodyHtml + '</div></div>';
+}
+
+function manualFeatureCard(icon, title, desc) {
+  return '<div class="border border-gray-200 rounded-xl p-4 text-center">'
+    + '<i class="fi ' + icon + ' text-navy-600 text-2xl"></i>'
+    + '<p class="font-semibold text-gray-800 text-sm mt-2">' + title + '</p>'
+    + '<p class="text-xs text-gray-500 mt-1">' + desc + '</p></div>';
+}
+
+function manualStep(n, title, desc) {
+  return '<div class="step-row"><span class="step-badge">' + n + '</span>'
+    + '<div><div class="font-semibold text-gray-800 text-sm">' + title + '</div>'
+    + '<div class="text-xs text-gray-500 mt-0.5">' + desc + '</div></div></div>';
+}
+
+function manualFaq(q, a) {
+  return '<details class="border-b border-gray-100 py-2 last:border-b-0">'
+    + '<summary class="font-semibold text-gray-800 text-sm cursor-pointer flex items-center gap-2">'
+    + '<i class="fi fi-rr-question-square text-navy-600"></i>' + q + '</summary>'
+    + '<p class="text-xs text-gray-500 mt-2 pl-6">' + a + '</p></details>';
 }
 
 // ===== ON LOAD =====
