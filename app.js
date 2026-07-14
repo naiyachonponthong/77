@@ -2314,8 +2314,16 @@ function exportMonthlyExcel(year, month) {
     hideLoading();
     if (!res.success) { showError(res.message); return; }
     var data = res.data || [];
-    var headers = [{key:'item_name',title:'ชื่อวัสดุ'},{key:'total_requested',title:'จำนวนขอเบิก'},{key:'total_approved',title:'จำนวนอนุมัติ'}];
-    var rows = data.map(function(d){ return {item_name:d.item_name||'', total_requested:d.total_requested||0, total_approved:d.total_approved||0}; });
+    var daysInMonth = new Date(year, month, 0).getDate();
+    var headers = [{key:'name',title:'ชื่อวัสดุ'},{key:'unit',title:'หน่วย'},{key:'received',title:'รับเข้า'}];
+    for (var d = 1; d <= daysInMonth; d++) headers.push({key:'d' + d, title:String(d)});
+    headers.push({key:'total_withdraw',title:'รวมเบิก'});
+    headers.push({key:'current_stock',title:'คงเหลือ'});
+    var rows = data.map(function(row) {
+      var obj = { name:row.name || '', unit:row.unit || '', received:row.received || 0, total_withdraw:row.total_withdraw || 0, current_stock:row.current_stock || 0 };
+      for (var d = 1; d <= daysInMonth; d++) obj['d' + d] = row.daily[d] || 0;
+      return obj;
+    });
     downloadXlsx(rows, headers, 'รายงานเบิก_' + month + '_' + (year+543));
   }).catch(function() { hideLoading(); showError('Export ไม่สำเร็จ'); });
 }
