@@ -233,7 +233,9 @@ function doLogin() {
     } else { showError(res.message); }
   }).catch(function(err) {
     btn.disabled = false; btn.innerHTML = '<i class="fi fi-rr-sign-in"></i> เข้าสู่ระบบ';
-    showError('ไม่สามารถเชื่อมต่อระบบได้');
+    showError(err && err.isBackendError
+      ? err.message
+      : 'ไม่สามารถเชื่อมต่อระบบได้ กรุณาตรวจสอบอินเทอร์เน็ตหรือการ Deploy ของ Google Apps Script');
   });
 }
 

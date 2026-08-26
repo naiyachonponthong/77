@@ -79,6 +79,7 @@ function doGet(e) {
       switch (fn) {
         case 'login':               result = login(args[0], args[1], args[2]); break;
         case 'validateSession':     result = validateSession(args[0]); break;
+        case 'bootstrap':           result = bootstrap(args[0]); break;
         case 'logout':              result = logout(args[0]); break;
         case 'forgotPassword':      result = forgotPassword(args[0]); break;
         case 'getItems':            result = getItems(args[0]); break;
@@ -334,7 +335,8 @@ function login(username, password, role) {
     return {
       success: true,
       token: token,
-      user: { id: user.id, username: user.username, role: user.role, name: user.name, department: user.department || '', avatar: user.avatar || '' }
+      user: { id: user.id, username: user.username, role: user.role, name: user.name, department: user.department || '', avatar: user.avatar || '' },
+      config: getPublicConfig()
     };
   } catch(err) {
     logError('login', err);
@@ -1267,6 +1269,15 @@ function getDashboardStats(token) {
       .sort(function(a,b){ return b.qty - a.qty; })
       .slice(0, 5);
 
+    // ยอดเบิก (ที่อนุมัติแล้ว) แยกตามหมวดหมู่ — คำนวณที่นี่เลย หน้าเว็บจะได้ไม่ต้องยิง getWithdrawals ซ้ำ
+    var itemCatById = {};
+    items.forEach(function(i){ itemCatById[i.id] = i.category || 'ไม่ระบุหมวด'; });
+    var withdrawByCategory = {};
+    wds.filter(function(w){ return w.status === 'approved'; }).forEach(function(w) {
+      var cat = itemCatById[w.item_id] || 'ไม่ระบุหมวด';
+      withdrawByCategory[cat] = (withdrawByCategory[cat] || 0) + (w.quantity_approved || 0);
+    });
+
     // สต็อกแต่ละหมวด
     var categoryStock = {};
     items.forEach(function(i) {
@@ -1290,6 +1301,7 @@ function getDashboardStats(token) {
       monthly: Object.values(monthlyData),
       top_items: topItems,
       category_stock: categoryStock,
+      withdraw_by_category: withdrawByCategory,
       low_stock_items: lowStockItems.slice(0, 5),
       recent_transactions: recentTxs,
       recent_pending: recentPending
@@ -1314,6 +1326,38 @@ function getUsers(token) {
     });
     return { success: true, data: users };
   } catch(err) { return { success: false, message: err.message }; }
+}
+
+/**
+ * bootstrap — ข้อมูลที่หน้าเว็บต้องใช้ตอนเปิดระบบ รวมไว้ใน request เดียว
+ * (เดิมต้องยิง validateSession + getMyProfile + getPublicConfig รวม 3 รอบ
+ * ซึ่งแต่ละรอบมี latency ของ Apps Script คนละ 1-3 วินาที ทำให้เข้าระบบช้ามาก)
+ */
+function bootstrap(token) {
+  try {
+    var session = validateSession(token);
+    if (!session) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
+
+    var users = getSheetData('Users');
+    var me = null;
+    for (var i = 0; i < users.length; i++) {
+      if (users[i].id === session.user_id) { me = users[i]; break; }
+    }
+    if (!me) return { success: false, message: 'ไม่พบบัญชีผู้ใช้' };
+    if (me.active === false) return { success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน' };
+
+    return {
+      success: true,
+      user: {
+        id: me.id, username: me.username, role: me.role, name: me.name,
+        department: me.department || '', avatar: me.avatar || ''
+      },
+      config: getPublicConfig()
+    };
+  } catch(err) {
+    logError('bootstrap', err);
+    return { success: false, message: err.message };
+  }
 }
 
 /**
@@ -1458,6 +1502,7 @@ function saveConfig(token, configData) {
     } else {
       saveToSheet('Config', configData);
     }
+    invalidateConfigCache();
     return { success: true, message: 'บันทึกการตั้งค่าเรียบร้อย' };
   } catch(err) { return { success: false, message: err.message }; }
 }
@@ -1664,6 +1709,7 @@ function sendLine(message, category) {
     var configs = getSheetData('Config');
     if (configs.length > 0) {
       updateInSheet('Config', configs[0].id, { line_month: monthKey, line_count: count + 1 });
+      invalidateConfigCache();
     }
     return { sent: true, reason: 'ส่งแล้ว (' + (count + 1) + '/' + limit + ')' };
   } catch(err) {
@@ -1799,6 +1845,21 @@ function deleteFromSheet(sheetName, id, hard) {
 
 /** getConfig — อ่าน Config */
 function getConfig() {
+  var cache  = CacheService.getScriptCache();
+  var cached = cache.get('config_v1');
+  if (cached) { try { return JSON.parse(cached); } catch(e){} }
+  var cfg = readConfigFromSheet();
+  try { cache.put('config_v1', JSON.stringify(cfg), 300); } catch(e){}
+  return cfg;
+}
+
+/** invalidateConfigCache — ล้างแคช Config (เรียกทุกครั้งที่มีการเขียนทับชีต Config) */
+function invalidateConfigCache() {
+  try { CacheService.getScriptCache().remove('config_v1'); } catch(e){}
+}
+
+/** readConfigFromSheet — อ่าน Config จากชีตจริง พร้อมเติมค่าเริ่มต้นที่ขาด */
+function readConfigFromSheet() {
   var c = getSheetData('Config');
   var cfg = c.length > 0 ? c[0] : { app_name: CONFIG.APP_NAME };
   // เติมค่าเริ่มต้นให้ config เก่าที่ยังไม่มี field ใหม่
