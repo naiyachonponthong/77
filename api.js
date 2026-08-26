@@ -7,7 +7,7 @@ var APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxRwxGGW3fxIB0rKR
 function callAPI(fnName) {
   var args = Array.prototype.slice.call(arguments, 1);
   // ใช้ POST เมื่อ payload ใหญ่เกิน URL length limit (base64 รูป / เพิ่มวัสดุหลายรายการ)
-  if (fnName === 'uploadFile' || fnName === 'addItemsBulk') {
+  if (fnName === 'uploadFile' || fnName === 'addItemsBulk' || fnName === 'addWithdrawalBulk') {
     var body = 'fn=' + encodeURIComponent(fnName) + '&args=' + encodeURIComponent(JSON.stringify(args));
     return fetch(APPS_SCRIPT_URL, {
       method: 'POST',

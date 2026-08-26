@@ -90,6 +90,7 @@ function doGet(e) {
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
         case 'getReceives':         result = getReceives(args[0], args[1]); break;
         case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
+        case 'addWithdrawalBulk':   result = addWithdrawalBulk(args[0], args[1]); break;
         case 'getWithdrawals':      result = getWithdrawals(args[0], args[1]); break;
         case 'approveWithdrawal':   result = approveWithdrawal(args[0], args[1], args[2]); break;
         case 'rejectWithdrawal':    result = rejectWithdrawal(args[0], args[1], args[2]); break;
@@ -97,6 +98,7 @@ function doGet(e) {
         case 'getTransactions':     result = getTransactions(args[0], args[1]); break;
         case 'getDashboardStats':   result = getDashboardStats(args[0]); break;
         case 'getUsers':            result = getUsers(args[0]); break;
+        case 'getMyProfile':        result = getMyProfile(args[0]); break;
         case 'addUser':             result = addUser(args[0], args[1]); break;
         case 'updateUser':          result = updateUser(args[0], args[1], args[2]); break;
         case 'changePassword':      result = changePassword(args[0], args[1], args[2]); break;
@@ -171,6 +173,7 @@ function doPost(e) {
     switch (fn) {
       case 'uploadFile':    result = uploadFile(args[0], args[1], args[2], args[3]); break;
       case 'addItemsBulk': result = addItemsBulk(args[0], args[1]); break;
+      case 'addWithdrawalBulk': result = addWithdrawalBulk(args[0], args[1]); break;
       default: result = { success: false, message: 'Use GET for ' + fn };
     }
     return jsonResponse(result);
@@ -723,6 +726,129 @@ function addWithdrawal(token, wdData) {
   }
 }
 
+/**
+ * addWithdrawalBulk — ยื่นคำขอเบิกหลายรายการในครั้งเดียว
+ * wdData: { items: [{ item_id, quantity }], purpose, note, department, via_qr }
+ * สร้างใบเบิกแยกรายการ (อนุมัติทีละรายการได้) แต่ผูกด้วย batch_no เดียวกัน
+ * และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด
+ */
+function addWithdrawalBulk(token, wdData) {
+  try {
+    var session = validateSession(token);
+    if (!session) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
+
+    var lines = (wdData && wdData.items) || [];
+    if (!lines.length) return { success: false, message: 'กรุณาเลือกรายการที่ต้องการเบิกอย่างน้อย 1 รายการ' };
+    if (!wdData.purpose) return { success: false, message: 'กรุณาระบุวัตถุประสงค์' };
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(15000);
+    try {
+      var items = getSheetData('Items');
+      var itemById = {};
+      items.forEach(function(i){ itemById[i.id] = i; });
+
+      // แผนกผู้เบิก — ยึดจากข้อมูลผู้ใช้ (รหัสพนักงาน) เป็นหลัก
+      var dept = getUserDepartment(session.user_id) || session.department || wdData.department || '';
+      if (!dept) dept = CONFIG.NO_DEPT;
+
+      // ตรวจสอบทุกบรรทัดก่อน (รวมจำนวนที่ขอของวัสดุชิ้นเดียวกัน)
+      var wanted = {};
+      var errors = [];
+      var valid  = [];
+      lines.forEach(function(line, idx) {
+        var no   = idx + 1;
+        var item = itemById[line.item_id];
+        var qty  = parseInt(line.quantity);
+        if (!item) { errors.push('รายการที่ ' + no + ': ไม่พบวัสดุในระบบ'); return; }
+        if (!qty || qty <= 0) { errors.push(item.name + ': จำนวนไม่ถูกต้อง'); return; }
+        wanted[item.id] = (wanted[item.id] || 0) + qty;
+        if (wanted[item.id] > item.current_stock) {
+          errors.push(item.name + ': ขอเกินสต็อกคงเหลือ (' + item.current_stock + ' ' + item.unit + ')');
+          wanted[item.id] -= qty;
+          return;
+        }
+        valid.push({ item: item, qty: qty });
+      });
+
+      if (!valid.length) {
+        return { success: false, message: errors.join(' | ') || 'ไม่มีรายการที่บันทึกได้', errors: errors };
+      }
+
+      var base     = getSheetData('Withdrawals').length;
+      var thaiYear = new Date().getFullYear() + 543;
+      var batchNo  = 'WB-' + thaiYear + '-' + String(base + 1).padStart(4, '0');
+      var now      = new Date().toISOString();
+
+      var rows = valid.map(function(v, i) {
+        return {
+          id: Utilities.getUuid(),
+          withdraw_no: 'WD-' + thaiYear + '-' + String(base + i + 1).padStart(4, '0'),
+          batch_no: valid.length > 1 ? batchNo : '',
+          item_id: v.item.id,
+          item_name: v.item.name,
+          item_code: v.item.item_code,
+          quantity_requested: v.qty,
+          quantity_approved: 0,
+          unit: v.item.unit,
+          purpose: wdData.purpose || '',
+          note: wdData.note || '',
+          category: v.item.category || '',
+          status: 'pending',
+          requested_by: session.user_id,
+          requested_by_name: session.name,
+          department: dept,
+          requested_at: now,
+          approved_by: '',
+          approved_by_name: '',
+          approved_at: '',
+          reject_reason: '',
+          via_qr: wdData.via_qr || false
+        };
+      });
+      saveManyToSheet('Withdrawals', rows);
+
+      // แจ้งเตือน 1 ข้อความต่อ 1 ชุด (ประหยัดโควตา LINE)
+      var detail = rows.map(function(r) {
+        return '• ' + r.item_name + ' x ' + r.quantity_requested + ' ' + r.unit;
+      }).join('\n');
+      var cats = {};
+      rows.forEach(function(r){ if (r.category) cats[r.category] = 1; });
+      var catList = Object.keys(cats);
+
+      var msg = '<b>คำขอเบิกใหม่</b> ' + (rows.length > 1 ? '#' + batchNo + ' (' + rows.length + ' รายการ)' : '#' + rows[0].withdraw_no)
+        + '\nผู้ขอ: ' + session.name + ' (' + CONFIG.USER_ROLES[session.role].name + ')'
+        + '\nแผนกที่เบิก: ' + dept
+        + '\nวัตถุประสงค์: ' + (wdData.purpose || '-')
+        + '\nรายการ:\n' + detail;
+      sendTelegram(msg);
+      // ส่งเข้า LINE เมื่อมีอย่างน้อย 1 รายการอยู่ในหมวดหมู่ที่ตั้งค่าไว้
+      var lineCats = getLineCategories();
+      if (!lineCats.length) {
+        sendLine(msg, '');
+      } else {
+        for (var c = 0; c < catList.length; c++) {
+          if (lineCats.indexOf(catList[c]) !== -1) { sendLine(msg, catList[c]); break; }
+        }
+      }
+
+      return {
+        success: true,
+        count: rows.length,
+        failed: errors.length,
+        errors: errors,
+        batch_no: rows.length > 1 ? batchNo : '',
+        withdraw_no: rows[0].withdraw_no,
+        message: 'ยื่นคำขอเบิก ' + rows.length + ' รายการเรียบร้อย รอการอนุมัติ'
+          + (errors.length ? ' (ข้าม ' + errors.length + ' รายการ)' : '')
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('addWithdrawalBulk', err);
+    return { success: false, message: err.message };
+  }
+}
+
 /** getWithdrawals — ดึงคำขอเบิกทั้งหมด (Admin/Staff) หรือของตัวเอง (Employee) */
 function getWithdrawals(token, filters) {
   try {
@@ -1004,6 +1130,30 @@ function getUsers(token) {
       return { id:u.id, username:u.username, name:u.name, role:u.role, email:u.email, phone:u.phone||'', department:u.department||'', telegram_chat_id:u.telegram_chat_id||'', active:u.active, last_login:u.last_login||'', avatar:u.avatar||'' };
     });
     return { success: true, data: users };
+  } catch(err) { return { success: false, message: err.message }; }
+}
+
+/**
+ * getMyProfile — ข้อมูลบัญชีของตัวเอง (ทุกบทบาทเรียกได้)
+ * ใช้ให้หน้าเว็บรู้แผนกล่าสุดโดยไม่ต้อง login ใหม่
+ */
+function getMyProfile(token) {
+  try {
+    var session = validateSession(token);
+    if (!session) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
+    var users = getSheetData('Users');
+    for (var i = 0; i < users.length; i++) {
+      var u = users[i];
+      if (u.id === session.user_id) {
+        return { success: true, data: {
+          id: u.id, username: u.username, name: u.name, role: u.role,
+          email: u.email || '', phone: u.phone || '', department: u.department || '',
+          telegram_chat_id: u.telegram_chat_id || '', avatar: u.avatar || '',
+          active: u.active, last_login: u.last_login || ''
+        } };
+      }
+    }
+    return { success: false, message: 'ไม่พบบัญชีผู้ใช้' };
   } catch(err) { return { success: false, message: err.message }; }
 }
 

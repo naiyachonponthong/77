@@ -50,6 +50,37 @@ function userDept() {
   return (AUTH.user && AUTH.user.department) || '';
 }
 
+/** applyUserToShell — อัปเดตชื่อ/บทบาท/แผนก บนแถบเมนูซ้าย */
+function applyUserToShell() {
+  if (!AUTH.user) return;
+  var nameEl = document.getElementById('sidebarName');
+  if (nameEl) nameEl.textContent = AUTH.user.name || AUTH.user.username;
+  var roleEl = document.getElementById('sidebarRole');
+  if (roleEl) {
+    var t = ROLE_LABELS[AUTH.user.role] || AUTH.user.role;
+    if (AUTH.user.department) t += ' • ' + AUTH.user.department;
+    roleEl.textContent = t;
+  }
+}
+
+/**
+ * refreshMyProfile — ดึงข้อมูลบัญชีตัวเองล่าสุดจากเซิร์ฟเวอร์ (ชื่อ/บทบาท/แผนก)
+ * ใช้ให้แผนกที่ผู้ดูแลระบบเพิ่งกำหนดมีผลทันที โดยไม่ต้อง logout หรือรีหน้าเว็บ
+ */
+function refreshMyProfile() {
+  if (!AUTH.token || !AUTH.user) return Promise.resolve(null);
+  return callAPI('getMyProfile', AUTH.token).then(function(res) {
+    if (!res || !res.success || !res.data) return null;
+    var u = res.data;
+    AUTH.user.department = u.department || '';
+    AUTH.user.name       = u.name || AUTH.user.name;
+    AUTH.user.role       = u.role || AUTH.user.role;
+    localStorage.setItem('sup_user', JSON.stringify(AUTH.user));
+    applyUserToShell();
+    return u;
+  }).catch(function(){ return null; });
+}
+
 // ===== URL PARAMS (for QR) =====
 var _QR_ACTION = '';
 var _QR_ITEM_ID = '';
@@ -225,6 +256,7 @@ function initApp() {
     localStorage.setItem('sup_user', JSON.stringify(AUTH.user));
     showMainShell();
     loadAppConfig();
+    refreshMyProfile();
     loadPage('dashboard');
     // QR action จาก URL
     if (_QR_ACTION === 'withdraw' && _QR_ITEM_ID) {
@@ -241,10 +273,7 @@ function showLoginPage() {
 function showMainShell() {
   document.getElementById('loginPage').classList.add('hidden');
   document.getElementById('mainShell').classList.remove('hidden');
-  document.getElementById('sidebarName').textContent = AUTH.user.name || AUTH.user.username;
-  var roleText = ROLE_LABELS[AUTH.user.role] || AUTH.user.role;
-  if (AUTH.user.department) roleText += ' • ' + AUTH.user.department;
-  document.getElementById('sidebarRole').textContent = roleText;
+  applyUserToShell();
   var isAdmin  = AUTH.user.role === 'admin';
   var isStaff  = AUTH.user.role === 'staff';
   var notEmp   = AUTH.user.role !== 'employee';
@@ -1794,6 +1823,7 @@ function renderWithdraw() {
   var itemsPromise = (_itemsData.length > 0 && (Date.now() - _itemsCacheTime) < ITEMS_CACHE_TTL)
     ? Promise.resolve({ success: true, data: _itemsData })
     : callAPI('getItems', AUTH.token).then(function(res){ _itemsData = res.data||[]; _itemsCacheTime = Date.now(); return res; });
+  refreshMyProfile();
   Promise.all([ itemsPromise, callAPI('getWithdrawals', AUTH.token, { status:'all' }) ]).then(function(results) {
     hideLoading();
     _itemsData = results[0].data || [];
@@ -1839,7 +1869,8 @@ function buildWithdrawPage() {
     var badgeClass = w.status==='approved'?'badge-approved':w.status==='rejected'?'badge-rejected':'badge-pending';
     var statusLabel = { pending:'รออนุมัติ', approved:'อนุมัติแล้ว', rejected:'ปฏิเสธ' }[w.status]||w.status;
     html += '<tr>';
-    html += '<td class="px-4 py-2.5 font-mono text-xs text-navy-700">' + escHtml(w.withdraw_no) + (w.via_qr?'<span class="ml-1 text-teal-600 text-xs" title="สแกน QR"><i class="fi fi-rr-qr-scan"></i></span>':'') + '</td>';
+    html += '<td class="px-4 py-2.5 font-mono text-xs text-navy-700">' + escHtml(w.withdraw_no) + (w.via_qr?'<span class="ml-1 text-teal-600 text-xs" title="สแกน QR"><i class="fi fi-rr-qr-scan"></i></span>':'')
+      + (w.batch_no?'<span class="block text-[10px] text-gray-400" title="ยื่นพร้อมกันเป็นชุด">ชุด ' + escHtml(w.batch_no) + '</span>':'') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500">' + formatDate(w.requested_at) + '</td>';
     html += '<td class="px-4 py-2.5 font-medium text-gray-700 max-w-xs truncate">' + escHtml(w.item_name) + '</td>';
     html += '<td class="px-4 py-2.5 text-center text-xs"><span class="text-gray-800 font-bold">' + w.quantity_requested + '</span>';
@@ -1910,14 +1941,119 @@ function openWithdrawSelectModal() {
   } else _openWdSelect();
 }
 function _openWdSelect() {
+  _wdCart = [];
   var body = '<div class="space-y-3">'
+    + wdDeptFieldHTML()
     + '<div class="flex gap-2">'
     + '<div class="relative flex-1"><i class="fi fi-rr-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
-    + '<input type="text" id="wdItemSearch" placeholder="ค้นหาวัสดุ..." onkeyup="filterWdItemList()" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div>'
+    + '<input type="text" id="wdItemSearch" placeholder="ค้นหาวัสดุ แล้วกดเพื่อเพิ่มลงรายการ..." onkeyup="filterWdItemList()" class="w-full pl-9 pr-4 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></div>'
     + '<button onclick="startWdQRScanner()" class="btn-primary px-3 py-2.5 rounded-xl" title="สแกน QR"><i class="fi fi-rr-qr-scan text-lg"></i></button></div>'
-    + '<div id="wdItemList" class="max-h-72 overflow-y-auto space-y-1">' + buildWdItemList(_itemsData) + '</div>'
-    + '<div id="wdQRReader" class="hidden"></div></div>';
-  openModal('เลือกรายการวัสดุที่ต้องการเบิก', body, '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>');
+    + '<div id="wdItemList" class="max-h-56 overflow-y-auto space-y-1 border border-gray-100 rounded-xl p-1">' + buildWdItemList(_itemsData) + '</div>'
+    + '<div id="wdQRReader" class="hidden"></div>'
+    + '<div id="wdCartBox"></div>'
+    + '<div><label class="form-label">วัตถุประสงค์ *</label><input type="text" id="wdPurpose" class="form-input" placeholder="ระบุวัตถุประสงค์ (ใช้กับทุกรายการในคำขอนี้)..."></div>'
+    + '<div><label class="form-label">หมายเหตุ</label><textarea id="wdNote" class="form-input" rows="2"></textarea></div>'
+    + '</div>';
+  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+    + '<button id="wdSubmitBtn" onclick="submitWithdrawBulk()" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>ยื่นคำขอเบิก</button>';
+  openModal('เบิกวัสดุ (เลือกได้หลายรายการ)', body, footer, 'max-w-2xl');
+  renderWdCart();
+  refreshWdDeptField();
+}
+
+// ===== ตะกร้าเบิก (เบิกครั้งละหลายรายการ) =====
+var _wdCart = [];
+
+function wdCartAdd(itemId) {
+  var item = _itemsData.find(function(i){ return i.id === itemId; });
+  if (!item) { showError('ไม่พบรายการวัสดุ'); return; }
+  if (item.current_stock <= 0) { showError('"' + item.name + '" สต็อกหมด ไม่สามารถเบิกได้'); return; }
+  var line = _wdCart.find(function(l){ return l.id === itemId; });
+  if (line) {
+    if (line.qty >= item.current_stock) { showError('"' + item.name + '" คงเหลือ ' + item.current_stock + ' ' + item.unit + ' เท่านั้น'); return; }
+    line.qty++;
+  } else {
+    _wdCart.push({ id:item.id, name:item.name, size:item.size||'', unit:item.unit, code:item.item_code, stock:item.current_stock, qty:1 });
+  }
+  renderWdCart();
+}
+
+function wdCartRemove(itemId) {
+  _wdCart = _wdCart.filter(function(l){ return l.id !== itemId; });
+  renderWdCart();
+}
+
+function wdCartSetQty(itemId, val) {
+  var line = _wdCart.find(function(l){ return l.id === itemId; });
+  if (!line) return;
+  var qty = parseInt(val) || 0;
+  if (qty < 1) qty = 1;
+  if (qty > line.stock) { qty = line.stock; showError('"' + line.name + '" คงเหลือ ' + line.stock + ' ' + line.unit + ' เท่านั้น'); }
+  line.qty = qty;
+  var input = document.getElementById('wdQty_' + itemId);
+  if (input) input.value = qty;
+}
+
+function renderWdCart() {
+  var box = document.getElementById('wdCartBox');
+  if (!box) return;
+  var html = '<div class="border border-navy-100 rounded-xl overflow-hidden">';
+  html += '<div class="bg-navy-50 px-3 py-2 flex items-center justify-between">';
+  html += '<span class="text-sm font-semibold text-navy-800"><i class="fi fi-rr-shopping-cart mr-1"></i>รายการที่จะเบิก</span>';
+  html += '<span class="text-xs font-bold text-navy-700">' + _wdCart.length + ' รายการ</span></div>';
+  if (!_wdCart.length) {
+    html += '<p class="text-center text-sm text-gray-400 py-5">ยังไม่ได้เลือกรายการ — กดที่วัสดุด้านบนเพื่อเพิ่ม (เลือกได้หลายรายการ)</p>';
+  } else {
+    html += '<div class="max-h-56 overflow-y-auto divide-y divide-gray-100">';
+    _wdCart.forEach(function(l) {
+      html += '<div class="flex items-center gap-2 px-3 py-2">';
+      html += '<div class="flex-1 min-w-0"><p class="text-sm font-medium text-gray-700 truncate">' + escHtml(l.name) + (l.size ? ' <span class="text-gray-400 text-xs">(' + escHtml(l.size) + ')</span>' : '') + '</p>';
+      html += '<p class="text-xs text-gray-400">' + escHtml(l.code||'') + ' • คงเหลือ ' + l.stock + ' ' + escHtml(l.unit) + '</p></div>';
+      html += '<input type="number" id="wdQty_' + l.id + '" value="' + l.qty + '" min="1" max="' + l.stock + '" onchange="wdCartSetQty(\'' + l.id + '\', this.value)" class="w-20 border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-navy-400">';
+      html += '<span class="text-xs text-gray-500 w-12 truncate">' + escHtml(l.unit) + '</span>';
+      html += '<button onclick="wdCartRemove(\'' + l.id + '\')" title="ลบออก" class="w-7 h-7 bg-red-100 text-red-600 rounded-lg flex items-center justify-center hover:bg-red-200 flex-shrink-0"><i class="fi fi-rr-trash text-xs"></i></button>';
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  html += '</div>';
+  box.innerHTML = html;
+
+  var btn = document.getElementById('wdSubmitBtn');
+  if (btn) {
+    btn.innerHTML = '<i class="fi fi-rr-inbox-out mr-1"></i>ยื่นคำขอเบิก' + (_wdCart.length ? ' (' + _wdCart.length + ' รายการ)' : '');
+  }
+}
+
+function submitWithdrawBulk() {
+  var dept    = (document.getElementById('wdDept')||{}).value||'';
+  var purpose = (document.getElementById('wdPurpose')||{}).value||'';
+  var note    = (document.getElementById('wdNote')||{}).value||'';
+  if (!_wdCart.length) { showError('กรุณาเลือกรายการวัสดุที่ต้องการเบิกอย่างน้อย 1 รายการ'); return; }
+  if (!dept) { showError('กรุณาเลือกแผนกที่เบิก'); return; }
+  if (!purpose.trim()) { showError('กรุณาระบุวัตถุประสงค์'); return; }
+
+  var payload = {
+    items: _wdCart.map(function(l){ return { item_id:l.id, quantity:l.qty }; }),
+    purpose: purpose, note: note, department: dept, via_qr: false
+  };
+  showLoading('กำลังยื่นคำขอ ' + _wdCart.length + ' รายการ...');
+  callAPI('addWithdrawalBulk', AUTH.token, payload).then(function(res) {
+    hideLoading();
+    if (res.success) {
+      closeModal();
+      _wdCart = [];
+      if (res.failed > 0) {
+        Swal.fire({ icon:'warning', title:res.message,
+          html:'<div style="text-align:left;font-size:13px">' + (res.errors||[]).map(escHtml).join('<br>') + '</div>',
+          customClass:{popup:'swal2-popup'} });
+      } else {
+        showSuccess(res.message);
+      }
+      if (_currentPage === 'withdraw') renderWithdraw();
+      else if (_currentPage === 'dashboard') renderDashboard();
+    } else showError(res.message);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 function startWdQRScanner() {
   document.getElementById('wdItemSearch').parentNode.parentNode.classList.add('hidden');
@@ -1938,8 +2074,9 @@ function startWdQRScanner() {
             var action = url.searchParams.get('action');
             var itemId = url.searchParams.get('item_id');
             if (action === 'withdraw' && itemId) {
-              closeModal();
-              openWithdrawFromQR(itemId);
+              var found = _itemsData.find(function(i){ return i.id == itemId || i.item_code === itemId; });
+              if (found) wdCartAdd(found.id);
+              else { closeModal(); openWithdrawFromQR(itemId); }
             } else {
               showError('QR Code ไม่ถูกต้อง');
               stopWdQRScanner();
@@ -1985,11 +2122,12 @@ function buildWdItemList(data) {
     var sClass = getStockClass(i.current_stock, i.min_stock);
     var imgUrlSrc = imgUrl(i.image_file_id);
     var imgHtml = imgUrlSrc ? '<img src="' + imgUrlSrc + '" class="w-9 h-9 object-cover rounded-xl border border-gray-200 flex-shrink-0">' : '<div class="w-9 h-9 bg-navy-100 rounded-xl flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-box-open-full text-navy-700 text-sm"></i></div>';
-    return '<div onclick="selectWdItem(\'' + i.id + '\')" class="flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer hover:bg-navy-50 border border-transparent hover:border-navy-200 transition">'
+    return '<div onclick="wdCartAdd(\'' + i.id + '\')" class="flex items-center gap-3 px-3 py-2.5 rounded-xl cursor-pointer hover:bg-navy-50 border border-transparent hover:border-navy-200 transition">'
       + imgHtml
       + '<div class="flex-1 min-w-0"><p class="text-sm font-medium text-gray-700 truncate">' + escHtml(i.name) + '</p>'
       + '<p class="text-xs text-gray-400">' + escHtml(i.item_code) + ' • ' + escHtml(i.size||'') + ' • ' + i.current_stock + ' ' + i.unit + '</p></div>'
-      + '<span class="px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ' + sClass + '">' + getStockLabel(i.current_stock, i.min_stock) + '</span></div>';
+      + '<span class="px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ' + sClass + '">' + getStockLabel(i.current_stock, i.min_stock) + '</span>'
+      + '<span class="w-7 h-7 bg-navy-700 text-white rounded-lg flex items-center justify-center flex-shrink-0" title="เพิ่มลงรายการเบิก"><i class="fi fi-rr-plus text-xs"></i></span></div>';
   }).join('');
 }
 function filterWdItemList() {
@@ -1998,12 +2136,28 @@ function filterWdItemList() {
   document.getElementById('wdItemList').innerHTML = buildWdItemList(filtered);
 }
 function selectWdItem(id) {
-  closeModal();
-  openWithdrawModal(id);
+  wdCartAdd(id);
 }
 
 /** wdDeptFieldHTML - ช่อง "แผนกที่เบิก" ในฟอร์มเบิกวัสดุ (ผูกกับบัญชีผู้ใช้) */
 function wdDeptFieldHTML() {
+  return '<div id="wdDeptWrap">' + wdDeptFieldInnerHTML() + '</div>';
+}
+
+/**
+ * refreshWdDeptField — ดึงแผนกล่าสุดมาอัปเดตในฟอร์มที่เปิดอยู่
+ * (ผู้ดูแลระบบเพิ่งกำหนดแผนกให้ ก็เห็นผลทันทีโดยไม่ต้องรีหน้าเว็บ)
+ */
+function refreshWdDeptField() {
+  var before = userDept();
+  refreshMyProfile().then(function() {
+    if (userDept() === before) return;
+    var wrap = document.getElementById('wdDeptWrap');
+    if (wrap) wrap.innerHTML = wdDeptFieldInnerHTML();
+  });
+}
+
+function wdDeptFieldInnerHTML() {
   var dept = userDept();
   if (dept) {
     return '<div class="flex flex-wrap items-center gap-2 bg-navy-50 border border-navy-100 rounded-xl px-3 py-2">'
@@ -2032,6 +2186,7 @@ function openWithdrawModal(itemId) {
   var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
     + '<button onclick="submitWithdraw()" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>ยื่นคำขอเบิก</button>';
   openModal('เบิกวัสดุ', body, footer);
+  refreshWdDeptField();
 }
 
 function openWithdrawFromQR(itemId) {
@@ -2052,6 +2207,7 @@ function openWithdrawFromQR(itemId) {
     var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
       + '<button onclick="submitWithdraw()" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>ยื่นคำขอเบิก</button>';
     openModal('เบิกวัสดุ (QR)', body, footer);
+    refreshWdDeptField();
   }
   // reuse cache ถ้ามี
   if (_itemsData.length > 0 && (Date.now() - _itemsCacheTime) < ITEMS_CACHE_TTL) {
@@ -2137,6 +2293,7 @@ function buildApprovePage(filterStatus) {
       html += '<div class="flex-1 min-w-0"><div class="flex flex-wrap items-center gap-2 mb-1">';
       html += '<span class="font-bold text-gray-800 text-sm">' + escHtml(w.item_name) + '</span>';
       html += '<span class="font-mono text-xs text-navy-600">#' + escHtml(w.withdraw_no) + '</span>';
+      if (w.batch_no) html += '<span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full" title="ยื่นพร้อมกันเป็นชุด">ชุด ' + escHtml(w.batch_no) + '</span>';
       html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span>';
       if (w.via_qr) html += '<span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full"><i class="fi fi-rr-qr-scan mr-0.5"></i>QR</span>';
       html += '</div>';
@@ -2706,10 +2863,15 @@ function exportLowStock() {
 // ===== PROFILE =====
 function renderProfile() {
   showLoading('โหลดโปรไฟล์...');
-  callAPI('getUsers', AUTH.token).then(function(res) {
+  callAPI('getMyProfile', AUTH.token).then(function(res) {
     hideLoading();
-    var users = res.data || [];
-    var user  = users.find(function(u){ return u.id === AUTH.user.id; }) || AUTH.user;
+    var user = (res && res.success && res.data) ? res.data : AUTH.user;
+    if (res && res.success && res.data) {
+      AUTH.user.department = res.data.department || '';
+      AUTH.user.name       = res.data.name || AUTH.user.name;
+      localStorage.setItem('sup_user', JSON.stringify(AUTH.user));
+      applyUserToShell();
+    }
     buildProfilePage(user);
   }).catch(function() {
     hideLoading();
@@ -2787,7 +2949,8 @@ function saveProfile(userId) {
     if (res.success) {
       AUTH.user.name = data.name;
       localStorage.setItem('sup_user', JSON.stringify(AUTH.user));
-      document.getElementById('sidebarName').textContent = data.name;
+      applyUserToShell();
+      refreshMyProfile();
       showSuccess(res.message);
     } else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
@@ -2951,7 +3114,11 @@ function submitEditUser(id) {
   showLoading('กำลังบันทึก...');
   callAPI('updateUser', AUTH.token, id, data).then(function(res) {
     hideLoading(); closeModal();
-    if (res.success) { showSuccess(res.message); renderUsers(); }
+    if (res.success) {
+      showSuccess(res.message);
+      if (id === AUTH.user.id) refreshMyProfile();   // แก้บัญชีตัวเอง -> อัปเดตแผนกทันที
+      renderUsers();
+    }
     else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
@@ -3363,8 +3530,9 @@ function renderManual() {
   html += manualSection('m-withdraw', 'fi-rr-inbox-out', '8. เบิกวัสดุ & อนุมัติการเบิก',
     '<h4 class="font-semibold text-gray-700 text-sm mb-2">8.1 ยื่นคำขอเบิก (ทุกบทบาท)</h4>'
     + manualStep(1, 'เปิดเมนู "เบิกวัสดุ" แล้วกด "ยื่นคำขอเบิก"', 'หรือสแกน QR สติ๊กเกอร์ที่ติดบนวัสดุ')
-    + manualStep(2, 'เลือกวัสดุและระบุจำนวน + วัตถุประสงค์', 'กดยืนยันเพื่อส่งคำขอ สถานะเริ่มต้นคือ "รออนุมัติ" • ระบบจะแสดง <strong>แผนกที่เบิก</strong> ให้อัตโนมัติจากบัญชีผู้ใช้ และบันทึกไว้กับคำขอนั้น')
-    + manualStep(3, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
+    + manualStep(2, 'เลือกวัสดุได้หลายรายการในคำขอเดียว', 'กดที่ชื่อวัสดุเพื่อเพิ่มลงรายการด้านล่าง (กดซ้ำ = เพิ่มจำนวน) แก้จำนวนในช่องข้างรายการ หรือกดถังขยะเพื่อเอาออก • ระบบจะแสดง <strong>แผนกที่เบิก</strong> อัตโนมัติจากบัญชีผู้ใช้')
+    + manualStep(3, 'ระบุวัตถุประสงค์แล้วกด "ยื่นคำขอเบิก"', 'วัตถุประสงค์/หมายเหตุใช้ร่วมกันทั้งคำขอ • ระบบจะออกเลขที่เบิกแยกรายบรรทัด (หัวหน้าอนุมัติทีละรายการได้) แต่ผูกด้วย "เลขชุด" เดียวกัน และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด')
+    + manualStep(4, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
     + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">8.2 อนุมัติการเบิก <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
     + '<p class="text-sm text-gray-500 mb-2">เมนู <strong>อนุมัติการเบิก</strong> จะมีตัวเลขสีแดงกำกับจำนวนคำขอที่รออนุมัติ</p>'
     + manualStep(1, 'เปิดคำขอที่สถานะ "รออนุมัติ"', 'ตรวจสอบจำนวนที่ขอและวัตถุประสงค์')
