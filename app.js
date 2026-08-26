@@ -18,18 +18,24 @@ function parseListString(raw) {
     .filter(function(x){ return x !== ''; });
 }
 
-/** loadAppConfig — ดึงค่าตั้งค่าระบบที่เปิดเผยได้ (ชื่อระบบ โลโก้ รายชื่อแผนก) */
+/** applyPublicConfig — นำค่าตั้งค่าระบบมาใช้กับหน้าเว็บ (ชื่อระบบ โลโก้ รายชื่อแผนก) */
+function applyPublicConfig(cfg) {
+  if (!cfg) return;
+  _APP_CONFIG  = cfg;
+  _DEPARTMENTS = parseListString(cfg.departments);
+  var appName = cfg.app_name || 'ระบบวัสดุสิ้นเปลือง';
+  var sbName  = document.getElementById('sidebarAppName');
+  var lgName  = document.getElementById('loginAppName');
+  if (sbName) sbName.textContent = appName;
+  if (lgName) lgName.textContent = appName;
+  if (cfg.app_logo) updateLogoDisplay(cfg.app_logo);
+}
+
+/** loadAppConfig — ดึงค่าตั้งค่าระบบที่เปิดเผยได้ (ใช้เฉพาะตอนยังไม่ได้เข้าระบบ / รีเฟรชภายหลัง) */
 function loadAppConfig() {
   return callAPI('getPublicConfig', AUTH.token).then(function(res) {
     if (!res || !res.success) return;
-    _APP_CONFIG  = res.data || {};
-    _DEPARTMENTS = parseListString(_APP_CONFIG.departments);
-    var appName = _APP_CONFIG.app_name || 'ระบบวัสดุสิ้นเปลือง';
-    var sbName  = document.getElementById('sidebarAppName');
-    var lgName  = document.getElementById('loginAppName');
-    if (sbName) sbName.textContent = appName;
-    if (lgName) lgName.textContent = appName;
-    if (_APP_CONFIG.app_logo) updateLogoDisplay(_APP_CONFIG.app_logo);
+    applyPublicConfig(res.data || {});
   }).catch(function(){ /* ใช้ค่าเริ่มต้นถ้าโหลดไม่ได้ */ });
 }
 
@@ -215,8 +221,15 @@ function doLogin() {
   callAPI('login', username, password, role).then(function(res) {
     btn.disabled = false; btn.innerHTML = '<i class="fi fi-rr-sign-in"></i> เข้าสู่ระบบ';
     if (res.success) {
+      // login คืน user + config มาให้ครบแล้ว จึงเข้าหน้าหลักได้เลย
+      // ไม่ต้องยิง validateSession / getPublicConfig / getMyProfile ซ้ำอีก 3 รอบ
       AUTH.set(res.token, res.user);
-      initApp();
+      applyPublicConfig(res.config);
+      showMainShell();
+      loadPage('dashboard');
+      if (_QR_ACTION === 'withdraw' && _QR_ITEM_ID) {
+        setTimeout(function() { openWithdrawFromQR(_QR_ITEM_ID); }, 800);
+      }
     } else { showError(res.message); }
   }).catch(function(err) {
     btn.disabled = false; btn.innerHTML = '<i class="fi fi-rr-sign-in"></i> เข้าสู่ระบบ';
@@ -249,14 +262,14 @@ function submitForgotPassword() {
 // ===== APP INIT =====
 function initApp() {
   showLoading('กำลังตรวจสอบสิทธิ์...');
-  callAPI('validateSession', AUTH.token).then(function(session) {
+  // bootstrap = validateSession + ข้อมูลผู้ใช้ล่าสุด + config รวมใน request เดียว
+  callAPI('bootstrap', AUTH.token).then(function(res) {
     hideLoading();
-    if (!session) { AUTH.clear(); showLoginPage(); return; }
-    AUTH.user = { id: session.user_id, username: session.username, role: session.role, name: session.name, department: session.department || '' };
+    if (!res || !res.success || !res.user) { AUTH.clear(); showLoginPage(); return; }
+    AUTH.user = res.user;
     localStorage.setItem('sup_user', JSON.stringify(AUTH.user));
+    applyPublicConfig(res.config);
     showMainShell();
-    loadAppConfig();
-    refreshMyProfile();
     loadPage('dashboard');
     // QR action จาก URL
     if (_QR_ACTION === 'withdraw' && _QR_ITEM_ID) {
@@ -389,17 +402,12 @@ var _charts = {};
 
 function renderDashboard() {
   showLoading('โหลดข้อมูล Dashboard...');
-  Promise.all([
-    callAPI('getDashboardStats', AUTH.token),
-    callAPI('getWithdrawals', AUTH.token, { status:'approved' })
-  ]).then(function(results) {
+  // getDashboardStats สรุปยอดเบิกแยกหมวดหมู่มาให้แล้ว จึงไม่ต้องยิง getWithdrawals ซ้ำอีกรอบ
+  callAPI('getDashboardStats', AUTH.token).then(function(res) {
     hideLoading();
-    var res = results[0];
-    var wdRes = results[1];
     if (!res.success) { showError(res.message); return; }
     var d  = res;
     var kpi= res.kpi;
-    var withdrawals = (wdRes.data || []).filter(function(w){ return w.status === 'approved'; });
 
     var badge = document.getElementById('pendingBadge');
     if (kpi.pending > 0) { badge.textContent = kpi.pending; badge.classList.remove('hidden'); }
@@ -582,13 +590,8 @@ function renderDashboard() {
       // Category withdrawal bar chart
       if (_charts.wdCat) _charts.wdCat.destroy();
       var ctxW = document.getElementById('chartWdCat');
-      if (ctxW && withdrawals.length > 0) {
-        var catTotals = {};
-        withdrawals.forEach(function(w){
-          var item = _itemsData.find(function(i){ return i.id === w.item_id; });
-          var cat = item ? (item.category || 'ไม่ระบุหมวด') : 'ไม่ระบุหมวด';
-          catTotals[cat] = (catTotals[cat] || 0) + (w.quantity || 0);
-        });
+      var catTotals = d.withdraw_by_category || {};
+      if (ctxW && Object.keys(catTotals).length > 0) {
         var catKeys = Object.keys(catTotals).sort(function(a,b){ return catTotals[b] - catTotals[a]; }).slice(0,6);
         var catVals = catKeys.map(function(k){ return catTotals[k]; });
         var barColors = ['#3b82f6','#10b981','#f59e0b','#8b5cf6','#ef4444','#06b6d4'];
@@ -3772,24 +3775,17 @@ function manualFaq(q, a) {
 
 // ===== ON LOAD =====
 window.onload = function() {
-  // ดึง config ก่อนเพื่ออัปเดต logo และชื่อระบบ
-  callAPI('getPublicConfig').then(function(res) {
-    if (res.success && res.data) {
-      var cfg = res.data;
-      if (cfg.app_name) {
-        document.getElementById('loginAppName').textContent = cfg.app_name;
-        document.getElementById('sidebarAppName').textContent = cfg.app_name;
-      }
-      updateLogoDisplay(cfg.app_logo);
-    }
-  }).catch(function() {}).finally(function() {
-    // Parse URL params for QR
-    var urlParams = new URLSearchParams(window.location.search);
-    _QR_ACTION = urlParams.get('action') || '';
-    _QR_ITEM_ID = urlParams.get('item_id') || '';
+  // Parse URL params for QR
+  var urlParams = new URLSearchParams(window.location.search);
+  _QR_ACTION = urlParams.get('action') || '';
+  _QR_ITEM_ID = urlParams.get('item_id') || '';
 
-    if (AUTH.token) { initApp(); }
-    else { showLoginPage(); }
-  });
+  if (AUTH.token) {
+    // bootstrap คืน config มาให้อยู่แล้ว จึงไม่ต้องรอ getPublicConfig ก่อน (เดิมรอแบบ sequential)
+    initApp();
+  } else {
+    showLoginPage();
+    loadAppConfig();   // โหลดชื่อ/โลโก้ขึ้นหน้า login แบบไม่บล็อก
+  }
 };
 
