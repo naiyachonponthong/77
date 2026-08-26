@@ -1401,6 +1401,7 @@ function buildStockPage() {
   getCategoryList(_stockData).forEach(function(c){ html += '<option>' + escHtml(c) + '</option>'; });
   html += '</select></div>';
   html += '<div class="flex gap-2">';
+  html += '<button onclick="openWithdrawSelectModal()" class="btn-primary flex items-center gap-2 whitespace-nowrap"><i class="fi fi-rr-inbox-out"></i> เบิกหลายรายการ</button>';
   html += '<button onclick="setStockView(\'card\')" id="btnCardView" class="px-3 py-2 border rounded-xl text-sm ' + (_stockView==='card'?'bg-navy-700 text-white border-navy-700':'border-gray-300 text-gray-600 hover:bg-gray-50') + '"><i class="fi fi-rr-grid"></i></button>';
   html += '<button onclick="setStockView(\'table\')" id="btnTableView" class="px-3 py-2 border rounded-xl text-sm ' + (_stockView==='table'?'bg-navy-700 text-white border-navy-700':'border-gray-300 text-gray-600 hover:bg-gray-50') + '"><i class="fi fi-rr-list"></i></button>';
   html += '</div></div>';
@@ -2171,22 +2172,25 @@ function wdDeptFieldInnerHTML() {
     + '<p class="text-xs text-amber-600 mt-1"><i class="fi fi-rr-triangle-warning mr-1"></i>บัญชีนี้ยังไม่ได้ผูกแผนก กรุณาเลือกแผนก หรือแจ้งผู้ดูแลระบบให้กำหนดแผนกให้</p></div>';
 }
 
+/**
+ * openWithdrawModal — เปิดฟอร์มเบิกแบบเลือกได้หลายรายการ
+ * โดยใส่วัสดุที่กดปุ่ม "เบิก" มาให้เป็นรายการแรก แล้วเพิ่มรายการอื่นต่อได้เลย
+ * (ใช้จากหน้าสต็อกคงเหลือ และหน้ารายละเอียดวัสดุ)
+ */
 function openWithdrawModal(itemId) {
-  var item = _itemsData.find(function(i){ return i.id === itemId; });
-  if (!item) return;
-  var body = '<div class="space-y-4">';
-  body += '<input type="hidden" id="wdItemId" value="' + itemId + '">';
-  body += '<input type="hidden" id="wdViaQr" value="false">';
-  body += wdDeptFieldHTML();
-  body += '<p class="text-sm text-gray-600">รายการ: <b>' + escHtml(item.name) + '</b> (คงเหลือ ' + item.current_stock + ' ' + item.unit + ')</p>';
-  body += fieldHTML('จำนวนที่ต้องการเบิก *', 'wdQty', 'number', 1);
-  body += '<div class="sm:col-span-2"><label class="form-label">วัตถุประสงค์ *</label><input type="text" id="wdPurpose" class="form-input" placeholder="ระบุวัตถุประสงค์..."></div>';
-  body += '<div class="sm:col-span-2"><label class="form-label">หมายเหตุ</label><textarea id="wdNote" class="form-input" rows="2"></textarea></div>';
-  body += '</div>';
-  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
-    + '<button onclick="submitWithdraw()" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>ยื่นคำขอเบิก</button>';
-  openModal('เบิกวัสดุ', body, footer);
-  refreshWdDeptField();
+  if (_itemsData.length === 0) {
+    showLoading('โหลด...');
+    callAPI('getItems', AUTH.token).then(function(res) {
+      hideLoading();
+      _itemsData = res.data || [];
+      _itemsCacheTime = Date.now();
+      _openWdSelect();
+      if (itemId) wdCartAdd(itemId);
+    }).catch(function(){ hideLoading(); showError('โหลดข้อมูลไม่สำเร็จ'); });
+    return;
+  }
+  _openWdSelect();
+  if (itemId) wdCartAdd(itemId);
 }
 
 function openWithdrawFromQR(itemId) {
@@ -3529,7 +3533,7 @@ function renderManual() {
   // 8. เบิกวัสดุ & อนุมัติ
   html += manualSection('m-withdraw', 'fi-rr-inbox-out', '8. เบิกวัสดุ & อนุมัติการเบิก',
     '<h4 class="font-semibold text-gray-700 text-sm mb-2">8.1 ยื่นคำขอเบิก (ทุกบทบาท)</h4>'
-    + manualStep(1, 'เปิดเมนู "เบิกวัสดุ" แล้วกด "ยื่นคำขอเบิก"', 'หรือสแกน QR สติ๊กเกอร์ที่ติดบนวัสดุ')
+    + manualStep(1, 'เปิดฟอร์มเบิก', 'เมนู "เบิกวัสดุ" แล้วกด "ยื่นคำขอเบิก" • หรือที่หน้า "สต็อกคงเหลือ" กดปุ่ม "เบิกหลายรายการ" ด้านบน หรือกดปุ่ม "เบิก" ที่วัสดุใดก็ได้ (ระบบจะใส่วัสดุชิ้นนั้นเป็นรายการแรกให้ แล้วเพิ่มรายการอื่นต่อได้) • หรือสแกน QR สติ๊กเกอร์ที่ติดบนวัสดุ')
     + manualStep(2, 'เลือกวัสดุได้หลายรายการในคำขอเดียว', 'กดที่ชื่อวัสดุเพื่อเพิ่มลงรายการด้านล่าง (กดซ้ำ = เพิ่มจำนวน) แก้จำนวนในช่องข้างรายการ หรือกดถังขยะเพื่อเอาออก • ระบบจะแสดง <strong>แผนกที่เบิก</strong> อัตโนมัติจากบัญชีผู้ใช้')
     + manualStep(3, 'ระบุวัตถุประสงค์แล้วกด "ยื่นคำขอเบิก"', 'วัตถุประสงค์/หมายเหตุใช้ร่วมกันทั้งคำขอ • ระบบจะออกเลขที่เบิกแยกรายบรรทัด (หัวหน้าอนุมัติทีละรายการได้) แต่ผูกด้วย "เลขชุด" เดียวกัน และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด')
     + manualStep(4, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
