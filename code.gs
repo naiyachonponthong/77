@@ -10,10 +10,13 @@ const CONFIG = {
   ITEMS_PER_PAGE: 20,
   LOW_STOCK_DEFAULT: 5,
   SALT: 'SUP_SYS_2569_SALT',
+  NO_DEPT: 'ไม่ระบุแผนก',
+  LINE_MONTHLY_LIMIT: 300,
+  DEPARTMENTS: ['บัญชี','จัดซื้อ','ธุรการ','ฝ่ายผลิต','แพ็คกิ้ง','คลังสินค้า','ซ่อมบำรุง','QA/QC'],
   ADMIN_USERS: {
-    'admin':    { password: '123456', role: 'admin',    name: 'ผู้ดูแลระบบ',     email: 'admin@school.ac.th' },
-    'staff':    { password: '123456', role: 'staff',    name: 'เจ้าหน้าที่คลัง',  email: 'staff@school.ac.th' },
-    'employee': { password: '123456', role: 'employee', name: 'พนักงาน 01',      email: 'emp@school.ac.th' }
+    'admin':    { password: '123456', role: 'admin',    name: 'ผู้ดูแลระบบ',     email: 'admin@school.ac.th', department: 'ธุรการ' },
+    'staff':    { password: '123456', role: 'staff',    name: 'เจ้าหน้าที่คลัง',  email: 'staff@school.ac.th', department: 'คลังสินค้า' },
+    'employee': { password: '123456', role: 'employee', name: 'พนักงาน 01',      email: 'emp@school.ac.th',   department: 'บัญชี' }
   },
   USER_ROLES: {
     'admin':    { name: 'ผู้ดูแลระบบ',    permissions: ['all'] },
@@ -81,6 +84,7 @@ function doGet(e) {
         case 'getItems':            result = getItems(args[0]); break;
         case 'getItemById':         result = getItemById(args[0], args[1]); break;
         case 'addItem':             result = addItem(args[0], args[1]); break;
+        case 'addItemsBulk':        result = addItemsBulk(args[0], args[1]); break;
         case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
         case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
@@ -99,11 +103,14 @@ function doGet(e) {
         case 'resetUserPassword':   result = resetUserPassword(args[0], args[1]); break;
         case 'toggleUserActive':    result = toggleUserActive(args[0], args[1]); break;
         case 'saveConfig':          result = saveConfig(args[0], args[1]); break;
-        case 'getConfig':           result = { success: true, data: getConfig() }; break;
+        case 'getConfig':           result = getConfigSecure(args[0]); break;
+        case 'getPublicConfig':     result = { success: true, data: getPublicConfig() }; break;
         case 'getMonthlyReport':    result = getMonthlyReport(args[0], args[1], args[2]); break;
         case 'generateExportUrl':   result = generateExportUrl(args[0], args[1], args[2]); break;
         case 'uploadFile':          result = uploadFile(args[0], args[1], args[2], args[3]); break;
         case 'testTelegram':        result = testTelegram(args[0]); break;
+        case 'testLine':            result = testLine(args[0]); break;
+        case 'getLineQuota':        result = getLineQuota(args[0]); break;
         default:
           result = { success: false, message: 'Unknown function: ' + fn };
       }
@@ -162,7 +169,8 @@ function doPost(e) {
     }
     var result;
     switch (fn) {
-      case 'uploadFile': result = uploadFile(args[0], args[1], args[2], args[3]); break;
+      case 'uploadFile':    result = uploadFile(args[0], args[1], args[2], args[3]); break;
+      case 'addItemsBulk': result = addItemsBulk(args[0], args[1]); break;
       default: result = { success: false, message: 'Use GET for ' + fn };
     }
     return jsonResponse(result);
@@ -212,6 +220,14 @@ function initializeSheets() {
       telegram_bot_token: '',
       telegram_chat_id: '',
       telegram_enabled: false,
+      departments: CONFIG.DEPARTMENTS.join(','),
+      line_enabled: false,
+      line_channel_token: '',
+      line_target_id: '',
+      line_categories: '',
+      line_monthly_limit: CONFIG.LINE_MONTHLY_LIMIT,
+      line_month: '',
+      line_count: 0,
       low_stock_threshold: CONFIG.LOW_STOCK_DEFAULT,
       app_version: CONFIG.APP_VERSION
     });
@@ -229,6 +245,7 @@ function initializeSheets() {
         name: u.name,
         email: u.email,
         phone: '',
+        department: u.department || '',
         avatar: '',
         telegram_chat_id: '',
         active: true,
@@ -286,6 +303,7 @@ function login(username, password, role) {
       username: user.username,
       role: user.role,
       name: user.name,
+      department: user.department || '',
       expires_at: new Date(now.getTime() + CONFIG.SESSION_TIMEOUT * 1000).toISOString()
     });
     updateInSheet('Users', user.id, { last_login: now.toISOString() });
@@ -293,7 +311,7 @@ function login(username, password, role) {
     return {
       success: true,
       token: token,
-      user: { id: user.id, username: user.username, role: user.role, name: user.name, avatar: user.avatar || '' }
+      user: { id: user.id, username: user.username, role: user.role, name: user.name, department: user.department || '', avatar: user.avatar || '' }
     };
   } catch(err) {
     logError('login', err);
@@ -415,6 +433,88 @@ function addItem(token, itemData) {
     return { success: true, data: newItem, message: 'เพิ่มรายการวัสดุเรียบร้อย' };
   } catch(err) {
     logError('addItem', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/**
+ * addItemsBulk — เพิ่มรายการวัสดุหลายรายการพร้อมกันในครั้งเดียว (Admin)
+ * itemList: [{ name, size, unit, category, barcode, price, supplier,
+ *              storage_location, current_stock, min_stock, description }]
+ */
+function addItemsBulk(token, itemList) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    if (!itemList || !itemList.length) return { success: false, message: 'ไม่มีรายการที่จะเพิ่ม' };
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(15000);
+    try {
+      var items = getSheetData('Items');
+      var usedCodes = {};
+      var usedKeys  = {};
+      items.forEach(function(i) {
+        usedCodes[i.item_code] = true;
+        usedKeys[(i.name || '') + '|' + (i.size || '')] = true;
+      });
+
+      var seq     = items.length;
+      var errors  = [];
+      var newRows = [];
+
+      itemList.forEach(function(row, idx) {
+        var no   = idx + 1;
+        var name = String(row.name || '').trim();
+        var unit = String(row.unit || '').trim();
+        if (!name) { errors.push('แถวที่ ' + no + ': ไม่ได้กรอกชื่อวัสดุ'); return; }
+        if (!unit) { errors.push('แถวที่ ' + no + ': ไม่ได้กรอกหน่วยนับ'); return; }
+
+        var key = name + '|' + String(row.size || '').trim();
+        if (usedKeys[key]) { errors.push('แถวที่ ' + no + ': "' + name + '" มีอยู่ในระบบแล้ว'); return; }
+        usedKeys[key] = true;
+
+        // รหัสวัสดุ: ใช้ที่กรอกมาถ้าไม่ซ้ำ ไม่งั้นสร้างต่อจากเลขล่าสุด
+        var code = String(row.item_code || '').trim();
+        if (!code || usedCodes[code]) {
+          do { seq++; code = 'SUP-' + String(seq).padStart(3, '0'); } while (usedCodes[code]);
+        }
+        usedCodes[code] = true;
+
+        newRows.push({
+          id: Utilities.getUuid(),
+          item_code: code,
+          name: name,
+          size: String(row.size || '').trim(),
+          unit: unit,
+          barcode: String(row.barcode || '').trim(),
+          category: String(row.category || '').trim() || 'อื่นๆ',
+          price: parseFloat(row.price) || 0,
+          supplier: String(row.supplier || '').trim(),
+          storage_location: String(row.storage_location || '').trim(),
+          current_stock: parseInt(row.current_stock) || 0,
+          min_stock: parseInt(row.min_stock) || 5,
+          description: String(row.description || '').trim(),
+          image_file_id: row.image_file_id || '',
+          active: true
+        });
+      });
+
+      if (newRows.length > 0) saveManyToSheet('Items', newRows);
+
+      return {
+        success: newRows.length > 0,
+        added: newRows.length,
+        failed: errors.length,
+        errors: errors,
+        data: newRows,
+        message: newRows.length > 0
+          ? 'เพิ่มวัสดุสำเร็จ ' + newRows.length + ' รายการ' + (errors.length ? ' (ข้าม ' + errors.length + ' รายการ)' : '')
+          : 'ไม่สามารถเพิ่มรายการได้'
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('addItemsBulk', err);
     return { success: false, message: err.message };
   }
 }
@@ -577,6 +677,10 @@ function addWithdrawal(token, wdData) {
 
     var wdNo = generateRunningNumber('WD', 'Withdrawals');
 
+    // แผนกผู้เบิก — ยึดจากข้อมูลผู้ใช้ (รหัสพนักงาน) เป็นหลัก
+    var dept = getUserDepartment(session.user_id) || session.department || wdData.department || '';
+    if (!dept) dept = CONFIG.NO_DEPT;
+
     var wd = {
       id: Utilities.getUuid(),
       withdraw_no: wdNo,
@@ -588,9 +692,11 @@ function addWithdrawal(token, wdData) {
       unit: item.unit,
       purpose: wdData.purpose || '',
       note: wdData.note || '',
+      category: item.category || '',
       status: 'pending',
       requested_by: session.user_id,
       requested_by_name: session.name,
+      department: dept,
       requested_at: new Date().toISOString(),
       approved_by: '',
       approved_by_name: '',
@@ -603,10 +709,12 @@ function addWithdrawal(token, wdData) {
     var msg = '<b>คำขอเบิกใหม่</b> #' + wdNo
       + '\nรายการ: ' + item.name
       + '\nจำนวน: ' + qty + ' ' + item.unit
+      + '\nหมวดหมู่: ' + (item.category || '-')
       + '\nผู้ขอ: ' + session.name + ' (' + CONFIG.USER_ROLES[session.role].name + ')'
+      + '\nแผนกที่เบิก: ' + dept
       + '\nวัตถุประสงค์: ' + (wdData.purpose || '-')
       + '\nสต็อกคงเหลือ: ' + item.current_stock + ' ' + item.unit;
-    sendTelegram(msg);
+    notifyAll(msg, item.category || '');
 
     return { success: true, message: 'ยื่นคำขอเบิกเรียบร้อย รอการอนุมัติ', withdraw_no: wdNo };
   } catch(err) {
@@ -687,6 +795,8 @@ function approveWithdrawal(token, wdId, qtyApproved) {
         actor_id: wd.requested_by,
         actor_name: wd.requested_by_name,
         actor_role: 'withdraw',
+        department: wd.department || getUserDepartment(wd.requested_by) || CONFIG.NO_DEPT,
+        category: item.category || '',
         approved_by_name: session.name,
         note: wd.note || '',
         date: now.split('T')[0]
@@ -704,10 +814,11 @@ function approveWithdrawal(token, wdId, qtyApproved) {
         + '\nรายการ: ' + item.name
         + '\nอนุมัติ: ' + qty + ' ' + item.unit
         + '\nผู้เบิก: ' + wd.requested_by_name
+        + '\nแผนกที่เบิก: ' + (wd.department || '-')
         + '\nสต็อกคงเหลือ: ' + stockAfter + ' ' + item.unit
         + '\nอนุมัติโดย: ' + session.name
         + lowMsg;
-      sendTelegram(msg);
+      notifyAll(msg, item.category || '');
 
       return { success: true, message: 'อนุมัติการเบิกเรียบร้อย' };
     } finally { lock.releaseLock(); }
@@ -735,11 +846,12 @@ function rejectWithdrawal(token, wdId, reason) {
       approved_at: new Date().toISOString(),
       reject_reason: reason || ''
     });
-    sendTelegram('<b>ปฏิเสธการเบิก</b> #' + wd.withdraw_no
+    notifyAll('<b>ปฏิเสธการเบิก</b> #' + wd.withdraw_no
       + '\nรายการ: ' + wd.item_name
       + '\nผู้ขอ: ' + wd.requested_by_name
+      + '\nแผนกที่เบิก: ' + (wd.department || '-')
       + '\nเหตุผล: ' + (reason || '-')
-      + '\nโดย: ' + session.name);
+      + '\nโดย: ' + session.name, wd.category || '');
     return { success: true, message: 'ปฏิเสธคำขอเรียบร้อย' };
   } catch(err) {
     logError('rejectWithdrawal', err);
@@ -889,7 +1001,7 @@ function getUsers(token) {
     var session = validateSession(token);
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
     var users = getSheetData('Users').map(function(u) {
-      return { id:u.id, username:u.username, name:u.name, role:u.role, email:u.email, phone:u.phone||'', active:u.active, last_login:u.last_login||'', avatar:u.avatar||'' };
+      return { id:u.id, username:u.username, name:u.name, role:u.role, email:u.email, phone:u.phone||'', department:u.department||'', telegram_chat_id:u.telegram_chat_id||'', active:u.active, last_login:u.last_login||'', avatar:u.avatar||'' };
     });
     return { success: true, data: users };
   } catch(err) { return { success: false, message: err.message }; }
@@ -912,6 +1024,7 @@ function addUser(token, userData) {
       name: userData.name,
       email: userData.email || '',
       phone: userData.phone || '',
+      department: userData.department || '',
       avatar: '',
       telegram_chat_id: '',
       active: true,
@@ -929,7 +1042,12 @@ function updateUser(token, userId, userData) {
       return { success: false, message: 'ไม่มีสิทธิ์' };
     }
     var update = { name: userData.name, email: userData.email, phone: userData.phone };
-    if (session.role === 'admin') { update.role = userData.role; update.active = userData.active; }
+    if (userData.telegram_chat_id !== undefined) update.telegram_chat_id = userData.telegram_chat_id;
+    if (session.role === 'admin') {
+      update.role = userData.role;
+      update.active = userData.active;
+      if (userData.department !== undefined) update.department = userData.department;
+    }
     if (userData.avatar) update.avatar = userData.avatar;
     updateInSheet('Users', userId, update);
     return { success: true, message: 'แก้ไขข้อมูลเรียบร้อย' };
@@ -1024,14 +1142,30 @@ function getMonthlyReport(token, year, month) {
     var items = getSheetData('Items').filter(function(i){ return i.active !== false; });
     var txs   = getSheetData('Transactions');
 
+    // แผนกของแต่ละใบเบิก (สำหรับ transaction เก่าที่ยังไม่มี field department)
+    var deptByWdNo = {};
+    getSheetData('Withdrawals').forEach(function(w) {
+      if (w.withdraw_no) deptByWdNo[w.withdraw_no] = w.department || '';
+    });
+    function txDept(t) {
+      return t.department || deptByWdNo[t.ref_id] || CONFIG.NO_DEPT;
+    }
+
+    var deptTotals = {};   // แผนก -> จำนวนรวมทั้งเดือน
+
     var rows = items.map(function(item) {
       // เบิกแต่ละวัน 1-31
       var daily = {};
       for (var d = 1; d <= 31; d++) daily[d] = 0;
+      var byDept = {};     // แผนก -> จำนวนที่เบิกวัสดุชิ้นนี้ในเดือนนี้
       txs.forEach(function(t) {
         if (t.type === 'withdraw' && t.item_id === item.id && (t.date||'').startsWith(dateStr)) {
           var day = parseInt(t.date.split('-')[2]);
-          if (day) daily[day] += t.quantity || 0;
+          var q   = t.quantity || 0;
+          if (day) daily[day] += q;
+          var dp = txDept(t);
+          byDept[dp]     = (byDept[dp] || 0) + q;
+          deptTotals[dp] = (deptTotals[dp] || 0) + q;
         }
       });
       var totalWithdraw = Object.values(daily).reduce(function(a,b){ return a+b; }, 0);
@@ -1040,11 +1174,16 @@ function getMonthlyReport(token, year, month) {
       }).reduce(function(s,t){ return s + (t.quantity||0); }, 0);
       return {
         item_code: item.item_code, name: item.name, size: item.size, unit: item.unit,
+        category: item.category || '', min_stock: item.min_stock || 0,
         current_stock: item.current_stock, received: received,
-        daily: daily, total_withdraw: totalWithdraw
+        daily: daily, total_withdraw: totalWithdraw, by_dept: byDept
       };
     });
-    return { success: true, data: rows, month: dateStr };
+
+    // เรียงแผนกตามยอดเบิกมาก -> น้อย
+    var deptNames = Object.keys(deptTotals).sort(function(a, b){ return deptTotals[b] - deptTotals[a]; });
+
+    return { success: true, data: rows, month: dateStr, departments: deptNames, dept_totals: deptTotals };
   } catch(err) { return { success: false, message: err.message }; }
 }
 
@@ -1133,6 +1272,112 @@ function sendTelegram(message) {
   } catch(err) { console.error('Telegram error:', err); }
 }
 
+/** stripHtmlTags — แปลงข้อความแบบ Telegram (HTML) ให้เป็นข้อความล้วนสำหรับ LINE */
+function stripHtmlTags(message) {
+  return String(message || '').replace(/<[^>]+>/g, '');
+}
+
+/** getLineCategories — หมวดหมู่ที่ให้ส่งแจ้งเตือนเข้า LINE */
+function getLineCategories() {
+  var raw = getConfig().line_categories || '';
+  return String(raw).split(/[,\n]/).map(function(c){ return c.trim(); })
+    .filter(function(c){ return c !== ''; });
+}
+
+/**
+ * sendLine — ส่ง push message เข้า LINE (LINE Messaging API)
+ * ส่งเฉพาะหมวดหมู่ที่ตั้งค่าไว้ และไม่เกินโควตาต่อเดือน
+ * คืนค่า { sent: bool, reason: string }
+ */
+function sendLine(message, category) {
+  try {
+    var cfg = getConfig();
+    if (!cfg.line_enabled || !cfg.line_channel_token || !cfg.line_target_id) {
+      return { sent: false, reason: 'ยังไม่ได้เปิดใช้งาน/ตั้งค่า LINE' };
+    }
+
+    // กรองตามหมวดหมู่ — ถ้าไม่ระบุหมวดหมู่ไว้เลย = ส่งทุกหมวดหมู่
+    var cats = getLineCategories();
+    if (cats.length > 0 && cats.indexOf(String(category || '').trim()) === -1) {
+      return { sent: false, reason: 'หมวดหมู่นี้ไม่ได้ตั้งให้แจ้งเตือนเข้า LINE' };
+    }
+
+    // โควตาต่อเดือน
+    var now      = new Date();
+    var monthKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    var count    = (cfg.line_month === monthKey) ? (parseInt(cfg.line_count) || 0) : 0;
+    var limit    = parseInt(cfg.line_monthly_limit) || CONFIG.LINE_MONTHLY_LIMIT;
+    if (count >= limit) {
+      return { sent: false, reason: 'ส่งครบโควตาเดือนนี้แล้ว (' + count + '/' + limit + ')' };
+    }
+
+    var res = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'Authorization': 'Bearer ' + cfg.line_channel_token },
+      payload: JSON.stringify({
+        to: cfg.line_target_id,
+        messages: [{ type: 'text', text: stripHtmlTags(message).substring(0, 4900) }]
+      }),
+      muteHttpExceptions: true
+    });
+
+    var code = res.getResponseCode();
+    if (code !== 200) {
+      logError('sendLine', new Error('HTTP ' + code + ' ' + res.getContentText()));
+      return { sent: false, reason: 'LINE ตอบกลับ HTTP ' + code };
+    }
+
+    var configs = getSheetData('Config');
+    if (configs.length > 0) {
+      updateInSheet('Config', configs[0].id, { line_month: monthKey, line_count: count + 1 });
+    }
+    return { sent: true, reason: 'ส่งแล้ว (' + (count + 1) + '/' + limit + ')' };
+  } catch(err) {
+    logError('sendLine', err);
+    return { sent: false, reason: err.message };
+  }
+}
+
+/**
+ * notifyAll — แจ้งเตือนทุกช่องทาง
+ * Telegram/ในระบบ: ส่งทุกหมวดหมู่  |  LINE: เฉพาะหมวดหมู่ที่ตั้งค่าไว้
+ */
+function notifyAll(message, category) {
+  sendTelegram(message);
+  sendLine(message, category);
+}
+
+/** getLineQuota — ยอดการส่ง LINE ของเดือนปัจจุบัน */
+function getLineQuota(token) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+    var cfg      = getConfig();
+    var now      = new Date();
+    var monthKey = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+    var used     = (cfg.line_month === monthKey) ? (parseInt(cfg.line_count) || 0) : 0;
+    var limit    = parseInt(cfg.line_monthly_limit) || CONFIG.LINE_MONTHLY_LIMIT;
+    return { success: true, month: monthKey, used: used, limit: limit, remaining: Math.max(0, limit - used) };
+  } catch(err) { return { success: false, message: err.message }; }
+}
+
+/** testLine — ทดสอบการส่งข้อความเข้า LINE */
+function testLine(token) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+    var cats = getLineCategories();
+    var testCat = cats.length > 0 ? cats[0] : '';
+    var r = sendLine('[ทดสอบ] ระบบวัสดุสิ้นเปลืองทำงานปกติ'
+      + '\nหมวดหมู่ทดสอบ: ' + (testCat || 'ทุกหมวดหมู่')
+      + '\nเวลา: ' + new Date().toLocaleString('th-TH'), testCat);
+    return r.sent
+      ? { success: true, message: 'ส่งข้อความทดสอบเข้า LINE แล้ว — ' + r.reason }
+      : { success: false, message: 'ส่งไม่สำเร็จ: ' + r.reason };
+  } catch(err) { return { success: false, message: err.message }; }
+}
+
 /** testTelegram — ทดสอบการส่ง Telegram */
 function testTelegram(token) {
   try {
@@ -1167,6 +1412,21 @@ function saveToSheet(sheetName, data) {
   data.updated_at = new Date().toISOString();
   sheet.appendRow([JSON.stringify(data)]);
   return data;
+}
+
+/** saveManyToSheet — เขียนหลายแถวในครั้งเดียว (เร็วกว่า appendRow ทีละแถว) */
+function saveManyToSheet(sheetName, dataList) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!dataList || dataList.length === 0) return [];
+  var now = new Date().toISOString();
+  var values = dataList.map(function(data) {
+    if (!data.id) data.id = Utilities.getUuid();
+    if (!data.created_at) data.created_at = now;
+    data.updated_at = now;
+    return [JSON.stringify(data)];
+  });
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, 1).setValues(values);
+  return dataList;
 }
 
 /** updateInSheet — อัพเดตข้อมูลตาม id */
@@ -1207,7 +1467,57 @@ function deleteFromSheet(sheetName, id, hard) {
 /** getConfig — อ่าน Config */
 function getConfig() {
   var c = getSheetData('Config');
-  return c.length > 0 ? c[0] : { app_name: CONFIG.APP_NAME };
+  var cfg = c.length > 0 ? c[0] : { app_name: CONFIG.APP_NAME };
+  // เติมค่าเริ่มต้นให้ config เก่าที่ยังไม่มี field ใหม่
+  if (!cfg.departments) cfg.departments = CONFIG.DEPARTMENTS.join(',');
+  if (cfg.line_enabled === undefined)       cfg.line_enabled = false;
+  if (cfg.line_channel_token === undefined) cfg.line_channel_token = '';
+  if (cfg.line_target_id === undefined)     cfg.line_target_id = '';
+  if (cfg.line_categories === undefined)    cfg.line_categories = '';
+  if (!cfg.line_monthly_limit)              cfg.line_monthly_limit = CONFIG.LINE_MONTHLY_LIMIT;
+  if (cfg.line_month === undefined)         cfg.line_month = '';
+  if (cfg.line_count === undefined)         cfg.line_count = 0;
+  return cfg;
+}
+
+/**
+ * getPublicConfig — ค่าตั้งค่าที่เปิดให้หน้าเว็บอ่านได้ก่อน login
+ * (ไม่รวม token/ความลับใด ๆ)
+ */
+function getPublicConfig() {
+  var cfg = getConfig();
+  return {
+    app_name: cfg.app_name || CONFIG.APP_NAME,
+    app_logo: cfg.app_logo || '',
+    organization_name: cfg.organization_name || '',
+    departments: cfg.departments || '',
+    low_stock_threshold: cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT,
+    app_version: cfg.app_version || CONFIG.APP_VERSION
+  };
+}
+
+/** getConfigSecure — config เต็ม (รวม token) เฉพาะผู้ดูแลระบบ */
+function getConfigSecure(token) {
+  var session = validateSession(token);
+  if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+  return { success: true, data: getConfig() };
+}
+
+/** getDepartmentList — รายชื่อแผนกจาก Config (คั่นด้วย , หรือขึ้นบรรทัดใหม่) */
+function getDepartmentList() {
+  var raw = getConfig().departments || '';
+  return String(raw).split(/[,\n]/).map(function(d){ return d.trim(); })
+    .filter(function(d){ return d !== ''; });
+}
+
+/** getUserDepartment — หาแผนกของผู้ใช้จาก user id (รหัสพนักงาน) */
+function getUserDepartment(userId) {
+  if (!userId) return '';
+  var users = getSheetData('Users');
+  for (var i = 0; i < users.length; i++) {
+    if (users[i].id === userId) return users[i].department || '';
+  }
+  return '';
 }
 
 /** generateRunningNumber — สร้างเลขที่อัตโนมัติ */
