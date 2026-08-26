@@ -67,7 +67,7 @@ const SEED_ITEMS = [
  */
 function doGet(e) {
   try {
-    initializeSheets();
+    ensureSheetsReady();
     var params = e ? e.parameter : {};
 
     // API mode: ถ้ามี ?fn=xxx ให้ return JSON แทน HTML (สำหรับ static frontend)
@@ -93,7 +93,9 @@ function doGet(e) {
         case 'addWithdrawalBulk':   result = addWithdrawalBulk(args[0], args[1]); break;
         case 'getWithdrawals':      result = getWithdrawals(args[0], args[1]); break;
         case 'approveWithdrawal':   result = approveWithdrawal(args[0], args[1], args[2]); break;
+        case 'approveWithdrawalBatch': result = approveWithdrawalBatch(args[0], args[1], args[2]); break;
         case 'rejectWithdrawal':    result = rejectWithdrawal(args[0], args[1], args[2]); break;
+        case 'rejectWithdrawalBatch': result = rejectWithdrawalBatch(args[0], args[1], args[2]); break;
         case 'cancelWithdrawal':    result = cancelWithdrawal(args[0], args[1]); break;
         case 'getTransactions':     result = getTransactions(args[0], args[1]); break;
         case 'getDashboardStats':   result = getDashboardStats(args[0]); break;
@@ -145,9 +147,17 @@ function include(filename) {
 // ============================================================
 
 /**
- * initializeSheets — สร้าง/ตรวจสอบ Sheets ทั้งหมด
- * เรียกทุกครั้งที่ doGet ทำงาน (ปลอดภัยถ้ามีอยู่แล้ว)
+ * ensureSheetsReady — เรียก initializeSheets() แบบมีแคช ไม่ต้องอ่านชีตซ้ำทุก request
+ * (initializeSheets เดิมอ่าน Config/Users/Items เต็มทุกครั้งแค่เพื่อเช็คว่าว่างหรือยัง
+ * ซึ่งไม่จำเป็นเลยหลังจากระบบตั้งค่าเสร็จแล้ว — แคชผลไว้ 6 ชั่วโมงต่อครั้งพอ)
  */
+function ensureSheetsReady() {
+  var cache = CacheService.getScriptCache();
+  if (cache.get('sheets_ready_v1')) return;
+  initializeSheets();
+  cache.put('sheets_ready_v1', '1', 21600);
+}
+
 /**
  * doOptions — CORS preflight
  */
@@ -159,7 +169,7 @@ function doOptions(e) {
 
 function doPost(e) {
   try {
-    initializeSheets();
+    ensureSheetsReady();
     var fn, args = [];
     if (e.postData && e.postData.type === 'application/json') {
       var payload = JSON.parse(e.postData.contents);
@@ -189,6 +199,16 @@ function jsonResponse(data) {
   return output;
 }
 
+/** sheetIsEmpty — เช็คว่าชีตว่างหรือไม่แบบเร็ว (ดูแค่จำนวนแถว ไม่อ่าน/แปลงข้อมูล) */
+function sheetIsEmpty(sheetName) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  return !sheet || sheet.getLastRow() < 2;
+}
+
+/**
+ * initializeSheets — สร้าง/ตรวจสอบ Sheets ทั้งหมด (สร้างชีตที่ขาด + ใส่ข้อมูลเริ่มต้น)
+ * เรียกผ่าน ensureSheetsReady() ซึ่งแคชผลไว้ ไม่ได้เรียกฟังก์ชันนี้ตรง ๆ ทุก request
+ */
 function initializeSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheetNames = ss.getSheets().map(function(s){ return s.getName(); });
@@ -212,7 +232,7 @@ function initializeSheets() {
   });
 
   // Seed Config ถ้ายังว่าง
-  if (getSheetData('Config').length === 0) {
+  if (sheetIsEmpty('Config')) {
     saveToSheet('Config', {
       app_name: CONFIG.APP_NAME,
       app_logo: '',
@@ -237,7 +257,7 @@ function initializeSheets() {
   }
 
   // Seed Users ถ้ายังว่าง
-  if (getSheetData('Users').length === 0) {
+  if (sheetIsEmpty('Users')) {
     Object.keys(CONFIG.ADMIN_USERS).forEach(function(username) {
       var u = CONFIG.ADMIN_USERS[username];
       saveToSheet('Users', {
@@ -258,7 +278,7 @@ function initializeSheets() {
   }
 
   // Seed Items ถ้ายังว่าง
-  if (getSheetData('Items').length === 0) {
+  if (sheetIsEmpty('Items')) {
     var year = new Date().getFullYear();
     SEED_ITEMS.forEach(function(item, idx) {
       var code = 'SUP-' + String(idx + 1).padStart(3, '0');
@@ -322,28 +342,47 @@ function login(username, password, role) {
   }
 }
 
-/** validateSession — ตรวจสอบ token ที่ส่งมา */
+/**
+ * validateSession — ตรวจสอบ token ที่ส่งมา
+ * แคชผลไว้ใน CacheService ตามอายุ session จริง (แต่ไม่เกิน 6 ชม.ต่อรอบ)
+ * เพราะฟังก์ชันนี้ถูกเรียกแทบทุก API request — ถ้าไปสแกนทั้งชีต Sessions ทุกครั้ง
+ * ระบบจะช้าลงเรื่อย ๆ ตามจำนวนผู้ใช้/จำนวนครั้งที่ login สะสม
+ * (logout() จะล้างแคชทันทีเพื่อไม่ให้ token ที่ออกจากระบบแล้วยังใช้ได้ค้างอยู่)
+ */
 function validateSession(token) {
   try {
     if (!token) return null;
-    var sessions = getSheetData('Sessions');
-    for (var i = 0; i < sessions.length; i++) {
-      var s = sessions[i];
-      if (s.token === token) {
-        if (new Date(s.expires_at) < new Date()) {
-          deleteFromSheet('Sessions', s.id, true);
-          return null;
-        }
-        return s;
+    var cache    = CacheService.getScriptCache();
+    var cacheKey = 'sess_' + token;
+    var cached   = cache.get(cacheKey);
+    var session;
+
+    if (cached) {
+      session = JSON.parse(cached);
+    } else {
+      session = null;
+      var sessions = getSheetData('Sessions');
+      for (var i = 0; i < sessions.length; i++) {
+        if (sessions[i].token === token) { session = sessions[i]; break; }
       }
+      if (!session) return null;
+      var ttlSec = Math.floor((new Date(session.expires_at).getTime() - Date.now()) / 1000);
+      if (ttlSec > 0) cache.put(cacheKey, JSON.stringify(session), Math.min(21600, ttlSec));
     }
-    return null;
+
+    if (new Date(session.expires_at) < new Date()) {
+      cache.remove(cacheKey);
+      deleteFromSheet('Sessions', session.id, true);
+      return null;
+    }
+    return session;
   } catch(err) { return null; }
 }
 
 /** logout — ยกเลิก session */
 function logout(token) {
   try {
+    CacheService.getScriptCache().remove('sess_' + token);
     var sessions = getSheetData('Sessions');
     for (var i = 0; i < sessions.length; i++) {
       if (sessions[i].token === token) { deleteFromSheet('Sessions', sessions[i].id, true); break; }
@@ -950,6 +989,150 @@ function approveWithdrawal(token, wdId, qtyApproved) {
     } finally { lock.releaseLock(); }
   } catch(err) {
     logError('approveWithdrawal', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/**
+ * approveWithdrawalBatch — อนุมัติคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (Admin เท่านั้น)
+ * approvals: [{ id, quantity }] — ใบเบิกที่ยังรออนุมัติในชุดนี้ พร้อมจำนวนที่จะอนุมัติ
+ * ตัดสต็อกและบันทึก Transaction ให้ทุกรายการ แล้วแจ้งเตือนรวมเป็นข้อความเดียว (ประหยัดโควตา LINE)
+ */
+function approveWithdrawalBatch(token, batchNo, approvals) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์อนุมัติ' };
+    if (!approvals || !approvals.length) return { success: false, message: 'ไม่มีรายการที่จะอนุมัติ' };
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(15000);
+    try {
+      var wdById = {};
+      getSheetData('Withdrawals').forEach(function(w){ wdById[w.id] = w; });
+      var itemById = {};
+      getSheetData('Items').forEach(function(i){ itemById[i.id] = i; });
+
+      var stockLeft = {};   // item_id -> สต็อกคงเหลือระหว่างประมวลผลชุดนี้ (กันเบิกเกินเมื่อวัสดุชิ้นเดียวกันซ้ำในชุด)
+      var results   = [];
+      var errors    = [];
+      var now       = new Date().toISOString();
+      var cfg       = getConfig();
+      var threshold = cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT;
+
+      approvals.forEach(function(a) {
+        var wd = wdById[a.id];
+        if (!wd || wd.batch_no !== batchNo) { errors.push('ไม่พบรายการในชุดนี้'); return; }
+        if (wd.status !== 'pending') { errors.push(wd.item_name + ': ดำเนินการไปแล้ว'); return; }
+        var item = itemById[wd.item_id];
+        if (!item) { errors.push(wd.item_name + ': ไม่พบรายการวัสดุ'); return; }
+        var qty = parseInt(a.quantity) || wd.quantity_requested;
+        if (qty <= 0) { errors.push(item.name + ': จำนวนไม่ถูกต้อง'); return; }
+        if (stockLeft[item.id] === undefined) stockLeft[item.id] = item.current_stock;
+        if (qty > stockLeft[item.id]) { errors.push(item.name + ': สต็อกไม่พอ (เหลือ ' + stockLeft[item.id] + ' ' + item.unit + ')'); return; }
+
+        var stockBefore = stockLeft[item.id];
+        var stockAfter  = stockBefore - qty;
+        stockLeft[item.id] = stockAfter;
+
+        updateInSheet('Items', item.id, { current_stock: stockAfter });
+        updateInSheet('Withdrawals', wd.id, {
+          status: 'approved', quantity_approved: qty,
+          approved_by: session.user_id, approved_by_name: session.name, approved_at: now
+        });
+        saveToSheet('Transactions', {
+          id: Utilities.getUuid(), type: 'withdraw', item_id: item.id, item_name: item.name, item_code: item.item_code,
+          quantity: qty, stock_before: stockBefore, stock_after: stockAfter, ref_id: wd.withdraw_no,
+          actor_id: wd.requested_by, actor_name: wd.requested_by_name, actor_role: 'withdraw',
+          department: wd.department || getUserDepartment(wd.requested_by) || CONFIG.NO_DEPT,
+          category: item.category || '', approved_by_name: session.name, note: wd.note || '', date: now.split('T')[0]
+        });
+
+        results.push({ wd: wd, item: item, qty: qty, stockAfter: stockAfter });
+      });
+
+      if (!results.length) {
+        return { success: false, message: errors.join(' | ') || 'ไม่สามารถอนุมัติรายการใดได้เลย', errors: errors };
+      }
+
+      // แจ้งเตือนรวมเป็นข้อความเดียวต่อ 1 ชุด
+      var detail  = results.map(function(r){ return '• ' + r.item.name + ' x ' + r.qty + ' ' + r.item.unit; }).join('\n');
+      var lowRows = results.filter(function(r){ return r.stockAfter <= (r.item.min_stock || threshold); });
+      var lowMsg  = lowRows.length
+        ? '\n<b>คำเตือน: สต็อกต่ำกว่าขั้นต่ำ</b>\n' + lowRows.map(function(r){ return '• ' + r.item.name + ' เหลือ ' + r.stockAfter + ' ' + r.item.unit; }).join('\n')
+        : '';
+      var first = results[0].wd;
+      var msg = '<b>อนุมัติการเบิก</b> ' + (results.length > 1 ? '#' + batchNo + ' (' + results.length + ' รายการ)' : '#' + first.withdraw_no)
+        + '\nผู้เบิก: ' + first.requested_by_name
+        + '\nแผนกที่เบิก: ' + (first.department || '-')
+        + '\nอนุมัติโดย: ' + session.name
+        + '\nรายการ:\n' + detail
+        + lowMsg;
+      sendTelegram(msg);
+
+      var cats = {};
+      results.forEach(function(r){ if (r.item.category) cats[r.item.category] = 1; });
+      var catList   = Object.keys(cats);
+      var lineCats  = getLineCategories();
+      if (!lineCats.length) {
+        sendLine(msg, '');
+      } else {
+        for (var c = 0; c < catList.length; c++) {
+          if (lineCats.indexOf(catList[c]) !== -1) { sendLine(msg, catList[c]); break; }
+        }
+      }
+
+      return {
+        success: true, approved: results.length, failed: errors.length, errors: errors,
+        message: 'อนุมัติ ' + results.length + ' รายการเรียบร้อย' + (errors.length ? ' (ข้าม ' + errors.length + ' รายการ)' : '')
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('approveWithdrawalBatch', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** rejectWithdrawalBatch — ปฏิเสธคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (Admin เท่านั้น) */
+function rejectWithdrawalBatch(token, batchNo, reason) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+    var wds = getSheetData('Withdrawals').filter(function(w){ return w.batch_no === batchNo && w.status === 'pending'; });
+    if (!wds.length) return { success: false, message: 'ไม่พบคำขอที่รออนุมัติในชุดนี้' };
+
+    var now = new Date().toISOString();
+    wds.forEach(function(wd) {
+      updateInSheet('Withdrawals', wd.id, {
+        status: 'rejected', approved_by: session.user_id, approved_by_name: session.name,
+        approved_at: now, reject_reason: reason || ''
+      });
+    });
+
+    var detail = wds.map(function(w){ return '• ' + w.item_name + ' x ' + w.quantity_requested + ' ' + w.unit; }).join('\n');
+    var first  = wds[0];
+    var msg = '<b>ปฏิเสธการเบิก</b> ' + (wds.length > 1 ? '#' + batchNo + ' (' + wds.length + ' รายการ)' : '#' + first.withdraw_no)
+      + '\nผู้ขอ: ' + first.requested_by_name
+      + '\nแผนกที่เบิก: ' + (first.department || '-')
+      + '\nเหตุผล: ' + (reason || '-')
+      + '\nโดย: ' + session.name
+      + '\nรายการ:\n' + detail;
+    sendTelegram(msg);
+
+    var cats = {};
+    wds.forEach(function(w){ if (w.category) cats[w.category] = 1; });
+    var catList  = Object.keys(cats);
+    var lineCats = getLineCategories();
+    if (!lineCats.length) {
+      sendLine(msg, '');
+    } else {
+      for (var c = 0; c < catList.length; c++) {
+        if (lineCats.indexOf(catList[c]) !== -1) { sendLine(msg, catList[c]); break; }
+      }
+    }
+
+    return { success: true, message: 'ปฏิเสธ ' + wds.length + ' รายการเรียบร้อย' };
+  } catch(err) {
+    logError('rejectWithdrawalBatch', err);
     return { success: false, message: err.message };
   }
 }

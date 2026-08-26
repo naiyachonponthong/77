@@ -2266,10 +2266,30 @@ function renderApprove() {
   }).catch(function() { hideLoading(); showError('โหลดข้อมูลไม่สำเร็จ'); });
 }
 
+/** groupApproveData — จัดกลุ่มคำขอเบิกตาม batch_no (ยื่นพร้อมกันเป็นชุด) ให้เป็นการ์ดเดียว */
+function groupApproveData(data) {
+  var groups = [];
+  var byBatch = {};
+  data.forEach(function(w) {
+    if (w.batch_no) {
+      if (!byBatch[w.batch_no]) {
+        var g = { batch_no: w.batch_no, items: [] };
+        byBatch[w.batch_no] = g;
+        groups.push(g);
+      }
+      byBatch[w.batch_no].items.push(w);
+    } else {
+      groups.push({ batch_no: null, items: [w] });
+    }
+  });
+  return groups;
+}
+
 function buildApprovePage(filterStatus) {
   filterStatus = filterStatus || 'pending';
   var data    = _approveData.filter(function(w){ return filterStatus==='all'?true:w.status===filterStatus; });
-  var paged   = paginate(data, _approvePage);
+  var groups  = groupApproveData(data);
+  var paged   = paginate(groups, _approvePage);
   var pendingCount = _approveData.filter(function(w){ return w.status==='pending'; }).length;
 
   var html = '<div class="fade-in space-y-4">';
@@ -2288,45 +2308,173 @@ function buildApprovePage(filterStatus) {
   if (paged.length === 0) {
     html += '<div class="card p-12 text-center"><i class="fi fi-rr-check-circle text-5xl text-green-400 block mb-3"></i><p class="text-gray-500">ไม่มีรายการ' + (filterStatus==='pending'?' รออนุมัติ':'') + '</p></div>';
   } else {
-    paged.forEach(function(w) {
-      var badgeClass = w.status==='approved'?'badge-approved':w.status==='rejected'?'badge-rejected':'badge-pending';
-      var statusLabel = {pending:'รออนุมัติ',approved:'อนุมัติแล้ว',rejected:'ปฏิเสธ'}[w.status]||w.status;
-      html += '<div class="card p-4 flex flex-col sm:flex-row sm:items-center gap-4">';
-      html += '<div class="w-12 h-12 bg-' + (w.status==='pending'?'amber':'gray') + '-100 rounded-xl flex items-center justify-center flex-shrink-0">';
-      html += '<i class="fi fi-rr-inbox-out text-' + (w.status==='pending'?'amber':'gray') + '-600 text-xl"></i></div>';
-      html += '<div class="flex-1 min-w-0"><div class="flex flex-wrap items-center gap-2 mb-1">';
-      html += '<span class="font-bold text-gray-800 text-sm">' + escHtml(w.item_name) + '</span>';
-      html += '<span class="font-mono text-xs text-navy-600">#' + escHtml(w.withdraw_no) + '</span>';
-      if (w.batch_no) html += '<span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full" title="ยื่นพร้อมกันเป็นชุด">ชุด ' + escHtml(w.batch_no) + '</span>';
-      html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span>';
-      if (w.via_qr) html += '<span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full"><i class="fi fi-rr-qr-scan mr-0.5"></i>QR</span>';
-      html += '</div>';
-      html += '<div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-gray-500">';
-      html += '<span><i class="fi fi-rr-user mr-1"></i>' + escHtml(w.requested_by_name||'-') + '</span>';
-      html += '<span><i class="fi fi-rr-briefcase mr-1"></i>แผนก: <b class="text-navy-700">' + escHtml(w.department||NO_DEPT) + '</b></span>';
-      html += '<span><i class="fi fi-rr-layers mr-1"></i>' + w.quantity_requested + ' ' + escHtml(w.unit) + '</span>';
-      html += '<span><i class="fi fi-rr-target mr-1"></i>' + escHtml(w.purpose||'-') + '</span>';
-      html += '<span><i class="fi fi-rr-calendar-day mr-1"></i>' + formatDate(w.requested_at) + '</span>';
-      html += '</div>';
-      if (w.status === 'approved') {
-        html += '<p class="text-xs text-green-700 mt-1"><i class="fi fi-rr-check mr-1"></i>อนุมัติ ' + w.quantity_approved + ' ' + w.unit + ' โดย ' + escHtml(w.approved_by_name||'-') + ' เมื่อ ' + formatDate(w.approved_at) + '</p>';
-      }
-      if (w.status === 'rejected' && w.reject_reason) {
-        html += '<p class="text-xs text-red-700 mt-1"><i class="fi fi-rr-cross mr-1"></i>เหตุผล: ' + escHtml(w.reject_reason) + '</p>';
-      }
-      html += '</div>';
-      if (w.status === 'pending') {
-        html += '<div class="flex gap-2 flex-shrink-0">';
-        html += '<button onclick="openApproveModal(\'' + w.id + '\',' + w.quantity_requested + ')" class="btn-success flex items-center gap-1.5"><i class="fi fi-rr-check"></i> อนุมัติ</button>';
-        html += '<button onclick="openRejectModal(\'' + w.id + '\')" class="btn-danger flex items-center gap-1.5"><i class="fi fi-rr-cross"></i> ปฏิเสธ</button>';
-        html += '</div>';
-      }
-      html += '</div>';
+    paged.forEach(function(g) {
+      html += g.items.length > 1 ? buildApproveBatchCard(g) : buildApproveSingleCard(g.items[0]);
     });
   }
   html += '<div id="approvePagination"></div></div>';
   document.getElementById('mainContent').innerHTML = html;
-  renderPagination('approvePagination', data.length, _approvePage, function(p){ _approvePage=p; buildApprovePage(filterStatus); });
+  renderPagination('approvePagination', groups.length, _approvePage, function(p){ _approvePage=p; buildApprovePage(filterStatus); });
+}
+
+var _statusBadgeClass = { approved:'badge-approved', rejected:'badge-rejected', pending:'badge-pending' };
+var _statusLabel      = { pending:'รออนุมัติ', approved:'อนุมัติแล้ว', rejected:'ปฏิเสธ' };
+
+/** buildApproveSingleCard — การ์ดคำขอเบิกแบบ 1 รายการ (ไม่ได้ยื่นเป็นชุด) */
+function buildApproveSingleCard(w) {
+  var badgeClass = _statusBadgeClass[w.status] || 'badge-pending';
+  var statusLabel = _statusLabel[w.status] || w.status;
+  var html = '<div class="card p-4 flex flex-col sm:flex-row sm:items-center gap-4">';
+  html += '<div class="w-12 h-12 bg-' + (w.status==='pending'?'amber':'gray') + '-100 rounded-xl flex items-center justify-center flex-shrink-0">';
+  html += '<i class="fi fi-rr-inbox-out text-' + (w.status==='pending'?'amber':'gray') + '-600 text-xl"></i></div>';
+  html += '<div class="flex-1 min-w-0"><div class="flex flex-wrap items-center gap-2 mb-1">';
+  html += '<span class="font-bold text-gray-800 text-sm">' + escHtml(w.item_name) + '</span>';
+  html += '<span class="font-mono text-xs text-navy-600">#' + escHtml(w.withdraw_no) + '</span>';
+  if (w.batch_no) html += '<span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full" title="ยื่นพร้อมกันเป็นชุด แต่รายการอื่นในชุดถูกดำเนินการไปแล้ว">ชุด #' + escHtml(w.batch_no) + '</span>';
+  html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span>';
+  if (w.via_qr) html += '<span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full"><i class="fi fi-rr-qr-scan mr-0.5"></i>QR</span>';
+  html += '</div>';
+  html += '<div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs text-gray-500">';
+  html += '<span><i class="fi fi-rr-user mr-1"></i>' + escHtml(w.requested_by_name||'-') + '</span>';
+  html += '<span><i class="fi fi-rr-briefcase mr-1"></i>แผนก: <b class="text-navy-700">' + escHtml(w.department||NO_DEPT) + '</b></span>';
+  html += '<span><i class="fi fi-rr-layers mr-1"></i>' + w.quantity_requested + ' ' + escHtml(w.unit) + '</span>';
+  html += '<span><i class="fi fi-rr-target mr-1"></i>' + escHtml(w.purpose||'-') + '</span>';
+  html += '<span><i class="fi fi-rr-calendar-day mr-1"></i>' + formatDate(w.requested_at) + '</span>';
+  html += '</div>';
+  if (w.status === 'approved') {
+    html += '<p class="text-xs text-green-700 mt-1"><i class="fi fi-rr-check mr-1"></i>อนุมัติ ' + w.quantity_approved + ' ' + w.unit + ' โดย ' + escHtml(w.approved_by_name||'-') + ' เมื่อ ' + formatDate(w.approved_at) + '</p>';
+  }
+  if (w.status === 'rejected' && w.reject_reason) {
+    html += '<p class="text-xs text-red-700 mt-1"><i class="fi fi-rr-cross mr-1"></i>เหตุผล: ' + escHtml(w.reject_reason) + '</p>';
+  }
+  html += '</div>';
+  if (w.status === 'pending') {
+    html += '<div class="flex gap-2 flex-shrink-0">';
+    html += '<button onclick="openApproveModal(\'' + w.id + '\',' + w.quantity_requested + ')" class="btn-success flex items-center gap-1.5"><i class="fi fi-rr-check"></i> อนุมัติ</button>';
+    html += '<button onclick="openRejectModal(\'' + w.id + '\')" class="btn-danger flex items-center gap-1.5"><i class="fi fi-rr-cross"></i> ปฏิเสธ</button>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+/**
+ * buildApproveBatchCard — การ์ดคำขอเบิกที่ยื่นพร้อมกันเป็นชุด (เลือกหลายรายการตอนเบิก)
+ * รวมรายการทั้งหมดไว้ในการ์ดเดียว อนุมัติ/ปฏิเสธได้ทีเดียวทั้งชุด
+ */
+function buildApproveBatchCard(g) {
+  var items = g.items;
+  var first = items[0];
+  var pending = items.filter(function(w){ return w.status === 'pending'; });
+  var allSameStatus = items.every(function(w){ return w.status === first.status; });
+
+  var html = '<div class="card p-4 space-y-3">';
+  html += '<div class="flex flex-wrap items-center gap-2">';
+  html += '<div class="w-10 h-10 bg-' + (pending.length?'amber':'gray') + '-100 rounded-xl flex items-center justify-center flex-shrink-0">';
+  html += '<i class="fi fi-rr-inbox-out text-' + (pending.length?'amber':'gray') + '-600 text-lg"></i></div>';
+  html += '<span class="font-bold text-gray-800 text-sm">คำขอเบิก ' + items.length + ' รายการ</span>';
+  html += '<span class="font-mono text-xs text-navy-600">ชุด #' + escHtml(g.batch_no) + '</span>';
+  if (allSameStatus) html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium ' + (_statusBadgeClass[first.status]||'badge-pending') + '">' + (_statusLabel[first.status]||first.status) + '</span>';
+  if (first.via_qr) html += '<span class="text-xs bg-teal-100 text-teal-700 px-2 py-0.5 rounded-full"><i class="fi fi-rr-qr-scan mr-0.5"></i>QR</span>';
+  html += '</div>';
+
+  html += '<div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-gray-500">';
+  html += '<span><i class="fi fi-rr-user mr-1"></i>' + escHtml(first.requested_by_name||'-') + '</span>';
+  html += '<span><i class="fi fi-rr-briefcase mr-1"></i>แผนก: <b class="text-navy-700">' + escHtml(first.department||NO_DEPT) + '</b></span>';
+  html += '<span><i class="fi fi-rr-target mr-1"></i>' + escHtml(first.purpose||'-') + '</span>';
+  html += '<span><i class="fi fi-rr-calendar-day mr-1"></i>' + formatDate(first.requested_at) + '</span>';
+  html += '</div>';
+
+  html += '<div class="border border-gray-100 rounded-xl divide-y divide-gray-100">';
+  items.forEach(function(w) {
+    html += '<div class="flex items-center gap-2 px-3 py-2 text-sm">';
+    html += '<span class="flex-1 min-w-0 truncate text-gray-700">' + escHtml(w.item_name) + '</span>';
+    html += '<span class="text-xs text-gray-500 flex-shrink-0">' + w.quantity_requested + (w.status==='approved' && w.quantity_approved!==w.quantity_requested ? ' <span class="text-green-600">(อนุมัติ ' + w.quantity_approved + ')</span>' : '') + ' ' + escHtml(w.unit) + '</span>';
+    html += '<span class="px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ' + (_statusBadgeClass[w.status]||'badge-pending') + '">' + (_statusLabel[w.status]||w.status) + '</span>';
+    html += '</div>';
+    if (w.status === 'rejected' && w.reject_reason) {
+      html += '<div class="px-3 pb-2 -mt-1"><p class="text-xs text-red-700"><i class="fi fi-rr-cross mr-1"></i>เหตุผล: ' + escHtml(w.reject_reason) + '</p></div>';
+    }
+  });
+  html += '</div>';
+
+  if (pending.length > 0) {
+    var partial = pending.length < items.length;
+    html += '<div class="flex gap-2 justify-end">';
+    html += '<button onclick="openBatchApproveModal(\'' + g.batch_no + '\')" class="btn-success flex items-center gap-1.5"><i class="fi fi-rr-check"></i> ' + (partial ? 'อนุมัติที่เหลือ' : 'อนุมัติทั้งชุด') + ' (' + pending.length + ')</button>';
+    html += '<button onclick="openBatchRejectModal(\'' + g.batch_no + '\')" class="btn-danger flex items-center gap-1.5"><i class="fi fi-rr-cross"></i> ' + (partial ? 'ปฏิเสธที่เหลือ' : 'ปฏิเสธทั้งชุด') + '</button>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function openBatchApproveModal(batchNo) {
+  var items = _approveData.filter(function(w){ return w.batch_no === batchNo && w.status === 'pending'; });
+  if (!items.length) { showError('ไม่มีรายการที่รออนุมัติในชุดนี้'); return; }
+  var first = items[0];
+  var body = '<div class="space-y-3">';
+  body += '<div class="text-sm text-gray-600"><p>ผู้ขอเบิก: <b>' + escHtml(first.requested_by_name||'-') + '</b> • แผนก: <b class="text-navy-700">' + escHtml(first.department||NO_DEPT) + '</b></p>';
+  body += '<p>วัตถุประสงค์: ' + escHtml(first.purpose||'-') + '</p></div>';
+  body += '<div class="border border-gray-200 rounded-xl divide-y divide-gray-100 max-h-72 overflow-y-auto">';
+  items.forEach(function(w) {
+    body += '<div class="flex items-center gap-3 px-3 py-2.5">';
+    body += '<div class="flex-1 min-w-0"><p class="text-sm font-medium text-gray-700 truncate">' + escHtml(w.item_name) + '</p>';
+    body += '<p class="text-xs text-gray-400">ขอ ' + w.quantity_requested + ' ' + escHtml(w.unit) + '</p></div>';
+    body += '<input type="number" data-approve-id="' + w.id + '" value="' + w.quantity_requested + '" min="1" max="' + w.quantity_requested + '" class="w-24 border border-gray-300 rounded-lg px-2 py-1.5 text-sm text-center focus:outline-none focus:ring-2 focus:ring-navy-400">';
+    body += '</div>';
+  });
+  body += '</div></div>';
+  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+    + '<button onclick="doApproveBatch(\'' + batchNo + '\')" class="btn-success"><i class="fi fi-rr-check mr-1"></i>ยืนยันอนุมัติ (' + items.length + ' รายการ)</button>';
+  openModal('อนุมัติการเบิกทั้งชุด', body, footer, 'max-w-lg');
+}
+
+function doApproveBatch(batchNo) {
+  var inputs = document.querySelectorAll('[data-approve-id]');
+  var approvals = [];
+  var invalid = false;
+  inputs.forEach(function(el) {
+    var qty = parseInt(el.value);
+    if (!qty || qty <= 0) invalid = true;
+    approvals.push({ id: el.getAttribute('data-approve-id'), quantity: qty });
+  });
+  if (invalid) { showError('กรุณาระบุจำนวนให้ถูกต้องทุกรายการ'); return; }
+  closeModal();
+  showLoading('กำลังอนุมัติ ' + approvals.length + ' รายการ...');
+  callAPI('approveWithdrawalBatch', AUTH.token, batchNo, approvals).then(function(res) {
+    hideLoading();
+    if (res.success) {
+      if (res.failed > 0) {
+        Swal.fire({ icon:'warning', title:res.message,
+          html:'<div style="text-align:left;font-size:13px">' + (res.errors||[]).map(escHtml).join('<br>') + '</div>',
+          customClass:{popup:'swal2-popup'} });
+      } else showSuccess(res.message);
+      renderApprove();
+    } else showError(res.message);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
+}
+
+function openBatchRejectModal(batchNo) {
+  var body = '<div class="space-y-3">'
+    + '<p class="text-sm text-gray-600">กรุณาระบุเหตุผลที่ปฏิเสธคำขอเบิกชุดนี้ (มีผลกับทุกรายการที่ยังรออนุมัติในชุดนี้)</p>'
+    + '<div><label class="form-label">เหตุผล *</label>'
+    + '<input type="text" id="rejectReason" placeholder="ระบุเหตุผล..." class="form-input"></div></div>';
+  var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
+    + '<button onclick="doRejectBatch(\'' + batchNo + '\')" class="btn-danger"><i class="fi fi-rr-cross mr-1"></i>ยืนยันปฏิเสธ</button>';
+  openModal('ปฏิเสธคำขอเบิกทั้งชุด', body, footer);
+}
+
+function doRejectBatch(batchNo) {
+  var reason = (document.getElementById('rejectReason')||{}).value||'';
+  if (!reason.trim()) { showError('กรุณาระบุเหตุผล'); return; }
+  closeModal();
+  showLoading('กำลังดำเนินการ...');
+  callAPI('rejectWithdrawalBatch', AUTH.token, batchNo, reason).then(function(res) {
+    hideLoading();
+    if (res.success) { showSuccess(res.message); renderApprove(); }
+    else showError(res.message);
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
 function openApproveModal(wdId, qty) {
@@ -3535,13 +3683,13 @@ function renderManual() {
     '<h4 class="font-semibold text-gray-700 text-sm mb-2">8.1 ยื่นคำขอเบิก (ทุกบทบาท)</h4>'
     + manualStep(1, 'เปิดฟอร์มเบิก', 'เมนู "เบิกวัสดุ" แล้วกด "ยื่นคำขอเบิก" • หรือที่หน้า "สต็อกคงเหลือ" กดปุ่ม "เบิกหลายรายการ" ด้านบน หรือกดปุ่ม "เบิก" ที่วัสดุใดก็ได้ (ระบบจะใส่วัสดุชิ้นนั้นเป็นรายการแรกให้ แล้วเพิ่มรายการอื่นต่อได้) • หรือสแกน QR สติ๊กเกอร์ที่ติดบนวัสดุ')
     + manualStep(2, 'เลือกวัสดุได้หลายรายการในคำขอเดียว', 'กดที่ชื่อวัสดุเพื่อเพิ่มลงรายการด้านล่าง (กดซ้ำ = เพิ่มจำนวน) แก้จำนวนในช่องข้างรายการ หรือกดถังขยะเพื่อเอาออก • ระบบจะแสดง <strong>แผนกที่เบิก</strong> อัตโนมัติจากบัญชีผู้ใช้')
-    + manualStep(3, 'ระบุวัตถุประสงค์แล้วกด "ยื่นคำขอเบิก"', 'วัตถุประสงค์/หมายเหตุใช้ร่วมกันทั้งคำขอ • ระบบจะออกเลขที่เบิกแยกรายบรรทัด (หัวหน้าอนุมัติทีละรายการได้) แต่ผูกด้วย "เลขชุด" เดียวกัน และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด')
+    + manualStep(3, 'ระบุวัตถุประสงค์แล้วกด "ยื่นคำขอเบิก"', 'วัตถุประสงค์/หมายเหตุใช้ร่วมกันทั้งคำขอ • ระบบจะออกเลขที่เบิกแยกรายบรรทัด แต่ผูกด้วย "เลขชุด" เดียวกัน ฝั่งอนุมัติจะเห็นเป็นการ์ดเดียวและกดอนุมัติ/ปฏิเสธได้ทีเดียวทั้งชุด และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด')
     + manualStep(4, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
     + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">8.2 อนุมัติการเบิก <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
     + '<p class="text-sm text-gray-500 mb-2">เมนู <strong>อนุมัติการเบิก</strong> จะมีตัวเลขสีแดงกำกับจำนวนคำขอที่รออนุมัติ</p>'
-    + manualStep(1, 'เปิดคำขอที่สถานะ "รออนุมัติ"', 'ตรวจสอบจำนวนที่ขอและวัตถุประสงค์')
-    + manualStep(2, 'กด "อนุมัติ"', 'ระบุจำนวนที่อนุมัติจริง (อาจน้อยกว่าที่ขอได้) ระบบจะตัดสต็อกทันทีเมื่ออนุมัติ')
-    + manualStep(3, 'หรือกด "ปฏิเสธ"', 'ระบุเหตุผลการปฏิเสธ (ถ้ามี) — สต็อกจะไม่ถูกตัด')
+    + manualStep(1, 'เปิดคำขอที่สถานะ "รออนุมัติ"', 'ตรวจสอบจำนวนที่ขอและวัตถุประสงค์ — คำขอที่เบิกหลายรายการพร้อมกัน (มีป้าย "ชุด #WB-...") จะรวมแสดงเป็นการ์ดเดียว ไม่แยกทีละรายการ')
+    + manualStep(2, 'กด "อนุมัติทั้งชุด"', 'ปรับจำนวนที่อนุมัติจริงของแต่ละรายการในชุดได้ (อาจน้อยกว่าที่ขอได้) แล้วกดยืนยันครั้งเดียว ระบบจะตัดสต็อกทุกรายการพร้อมกันทันที')
+    + manualStep(3, 'หรือกด "ปฏิเสธทั้งชุด"', 'ระบุเหตุผลการปฏิเสธ (ใช้ร่วมกันทุกรายการในชุด) — สต็อกจะไม่ถูกตัด')
     + '<div class="warn-box mt-3 text-sm"><i class="fi fi-rr-triangle-warning text-amber-600 mr-1"></i>การอนุมัติจะตัดยอดสต็อกทันทีและไม่สามารถยกเลิกย้อนหลังได้ ควรตรวจสอบยอดคงเหลือก่อนกดอนุมัติ</div>');
 
   // 9. ประวัติเคลื่อนไหว
