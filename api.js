@@ -51,7 +51,7 @@ function extractAppsScriptError(html) {
 function callAPI(fnName) {
   var args = Array.prototype.slice.call(arguments, 1);
   // ใช้ POST เมื่อ payload ใหญ่เกิน URL length limit (base64 รูป / เพิ่มวัสดุหลายรายการ)
-  if (fnName === 'uploadFile' || fnName === 'addItemsBulk' || fnName === 'addWithdrawalBulk') {
+  if (fnName === 'uploadFile' || fnName === 'addItemsBulk' || fnName === 'addWithdrawalBulk' || fnName === 'adjustStock') {
     var body = 'fn=' + encodeURIComponent(fnName) + '&args=' + encodeURIComponent(JSON.stringify(args));
     return fetch(APPS_SCRIPT_URL, {
       method: 'POST',

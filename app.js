@@ -489,12 +489,12 @@ function renderDashboard() {
     html += '<div class="card-body p-0"><div class="divide-y">';
     if (d.recent_transactions && d.recent_transactions.length > 0) {
       d.recent_transactions.slice(0,6).forEach(function(t) {
-        var isR = t.type === 'receive';
+        var meta = txTypeMeta(t);
         html += '<div class="flex items-center gap-3 px-4 py-3">';
-        html += '<div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ' + (isR ? 'bg-blue-100':'bg-purple-100') + '">';
-        html += '<i class="fi ' + (isR?'fi-rr-inbox-in text-blue-600':'fi-rr-inbox-out text-purple-600') + ' text-sm"></i></div>';
+        html += '<div class="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ' + meta.bg + '">';
+        html += '<i class="fi ' + meta.icon + ' text-sm"></i></div>';
         html += '<div class="flex-1 min-w-0"><p class="text-xs font-medium text-gray-700 truncate">' + escHtml(t.item_name) + '</p>';
-        html += '<p class="text-xs text-gray-400">' + (isR?'+':'-') + t.quantity + ' ' + t.unit + ' • ' + (t.actor_name||'-') + '</p></div>';
+        html += '<p class="text-xs text-gray-400">' + meta.sign + t.quantity + ' ' + (t.unit||'') + ' • ' + (t.actor_name||'-') + '</p></div>';
         html += '<span class="text-xs text-gray-400 flex-shrink-0">' + formatDate(t.date) + '</span></div>';
       });
     } else { html += '<p class="text-center text-xs text-gray-400 py-6">ยังไม่มีรายการ</p>'; }
@@ -1134,7 +1134,13 @@ function itemFormHTML(item) {
     + fieldHTML('หมวดหมู่', 'itemCategory', 'text', item.category||'วัสดุทำความสะอาด')
     + fieldHTML('ราคาต่อหน่วย', 'itemPrice', 'number', item.price||0, '', '0.01')
     + fieldHTML('ผู้จำหน่าย/ซัพพลายเออร์', 'itemSupplier', 'text', item.supplier||'')
-    + fieldHTML('สต็อกเริ่มต้น', 'itemStock', 'number', item.current_stock||0)
+    + (item.id
+        // ตอนแก้ไข: ยอดสต็อกแก้ที่นี่ไม่ได้ ต้องผ่าน รับเข้า / เบิก / นับสต็อก เท่านั้น เพื่อให้มีประวัติกำกับ
+        ? '<input type="hidden" id="itemEditId" value="' + escHtml(item.id) + '">'
+          + '<div><label class="form-label">สต็อกคงเหลือ</label>'
+          + '<input type="number" id="itemStock" value="' + (item.current_stock||0) + '" class="form-input bg-gray-100 text-gray-500" readonly>'
+          + '<p class="text-xs text-gray-400 mt-1">แก้ยอดได้ที่เมนู รับวัสดุเข้าคลัง / นับสต็อก</p></div>'
+        : fieldHTML('สต็อกเริ่มต้น', 'itemStock', 'number', item.current_stock||0))
     + fieldHTML('สต็อกขั้นต่ำ', 'itemMinStock', 'number', item.min_stock||5)
     + fieldHTML('ตำแหน่งจัดเก็บ', 'itemLocation', 'text', item.storage_location||'', 'sm:col-span-2')
     + textareaFieldHTML('รายละเอียด/หมายเหตุ', 'itemDescription', item.description||'', 'sm:col-span-2')
@@ -1232,7 +1238,8 @@ function removeItemImage() {
   var description = (document.getElementById('itemDescription')||{}).value||'';
   var stock = (document.getElementById('itemStock')||{}).value||0;
   var min   = (document.getElementById('itemMinStock')||{}).value||5;
-  var fakeItem = {name:name, size:size, unit:unit, barcode:barcode, category:cat, price:price, supplier:supplier, storage_location:location, description:description, current_stock:stock, min_stock:min, image_file_id:''};
+  var editId = (document.getElementById('itemEditId')||{}).value||'';  // คงสถานะ เพิ่ม/แก้ไข ไว้ตอน render ฟอร์มใหม่
+  var fakeItem = {id:editId, name:name, size:size, unit:unit, barcode:barcode, category:cat, price:price, supplier:supplier, storage_location:location, description:description, current_stock:stock, min_stock:min, image_file_id:''};
   var body = itemFormHTML(fakeItem);
   document.getElementById('modalBody').innerHTML = body;
 }
@@ -1694,16 +1701,18 @@ function submitStocktake() {
   if (adjustments.length === 0) { showError('ไม่มีรายการที่ต้องปรับยอด'); return; }
   showConfirm('ยืนยันปรับยอด', 'มี ' + adjustments.length + ' รายการที่ต้องปรับยอด ยืนยัน?', function() {
     showLoading('กำลังปรับยอด...');
-    // เรียก backend ทีละรายการ
-    var promises = adjustments.map(function(a) {
-      return callAPI('updateItem', AUTH.token, a.item_id, { current_stock: a.actual });
-    });
-    Promise.all(promises).then(function() {
+    // ส่งทั้งชุดให้ backend ครั้งเดียว (adjustStock ปรับ current_stock + บันทึก Transaction ให้)
+    callAPI('adjustStock', AUTH.token, adjustments).then(function(res) {
       hideLoading();
-      showSuccess('ปรับยอดเรียบร้อย ' + adjustments.length + ' รายการ');
-      _itemsCacheTime = 0; // clear cache
-      renderStocktake();
-    }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาดบางรายการ'); });
+      if (res && res.success) {
+        showSuccess(res.message || ('ปรับยอดเรียบร้อย ' + adjustments.length + ' รายการ'));
+        _itemsData = []; _itemsCacheTime = 0; // clear cache
+        renderStocktake();
+      } else {
+        showError((res && res.message) || 'ปรับยอดไม่สำเร็จ');
+        _itemsData = []; _itemsCacheTime = 0;
+      }
+    }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด ไม่สามารถปรับยอดได้'); });
   });
 }
 
@@ -2560,6 +2569,17 @@ function renderTransactions() {
   }).catch(function() { hideLoading(); showError('โหลดข้อมูลไม่สำเร็จ'); });
 }
 
+/** txTypeMeta — ป้าย/สี/เครื่องหมาย ตามประเภทการเคลื่อนไหว */
+function txTypeMeta(t) {
+  if (t.type === 'receive') return { label:'รับเข้า', badge:'badge-receive', text:'text-blue-700', bg:'bg-blue-100', icon:'fi-rr-inbox-in text-blue-600', sign:'+' };
+  if (t.type === 'adjust') {
+    var d = (t.diff !== undefined && t.diff !== null) ? Number(t.diff) : (Number(t.stock_after||0) - Number(t.stock_before||0));
+    return { label:'ปรับยอด', badge:'bg-amber-100 text-amber-700', text: d < 0 ? 'text-red-600' : 'text-green-600',
+             bg:'bg-amber-100', icon:'fi-rr-clipboard-list text-amber-600', sign: d < 0 ? '-' : '+' };
+  }
+  return { label:'เบิกออก', badge:'badge-withdraw', text:'text-purple-700', bg:'bg-purple-100', icon:'fi-rr-inbox-out text-purple-600', sign:'-' };
+}
+
 function buildTransactionsPage() {
   var filtered = applyTxFilter(_txData);
   var paged    = paginate(filtered, _txPage);
@@ -2567,8 +2587,8 @@ function buildTransactionsPage() {
   var html = '<div class="fade-in space-y-4">';
   html += '<div class="card p-4"><div class="flex flex-wrap gap-3 items-end">';
   html += '<div><label class="form-label">ประเภท</label><select id="txTypeFilter" onchange="applyTxFilterUI()" class="form-input w-36">';
-  ['all','receive','withdraw'].forEach(function(t){
-    var labels={all:'ทั้งหมด',receive:'รับเข้า',withdraw:'เบิกออก'};
+  ['all','receive','withdraw','adjust'].forEach(function(t){
+    var labels={all:'ทั้งหมด',receive:'รับเข้า',withdraw:'เบิกออก',adjust:'ปรับยอด'};
     html += '<option value="' + t + '" ' + (_txFilter.type===t?'selected':'') + '>' + labels[t] + '</option>';
   });
   html += '</select></div>';
@@ -2582,6 +2602,8 @@ function buildTransactionsPage() {
   html += '<div class="flex gap-2 text-xs">';
   html += '<span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full"><i class="fi fi-rr-inbox-in mr-1"></i>รับเข้า: ' + totalR + '</span>';
   html += '<span class="bg-purple-50 text-purple-700 px-3 py-1.5 rounded-full"><i class="fi fi-rr-inbox-out mr-1"></i>เบิกออก: ' + totalW + '</span>';
+  var totalA = filtered.filter(function(t){ return t.type==='adjust'; }).length;
+  if (totalA) html += '<span class="bg-amber-50 text-amber-700 px-3 py-1.5 rounded-full"><i class="fi fi-rr-clipboard-list mr-1"></i>ปรับยอด: ' + totalA + '</span>';
   html += '<span class="bg-gray-100 text-gray-600 px-3 py-1.5 rounded-full">ทั้งหมด: ' + filtered.length + '</span></div>';
 
   html += '<div class="card overflow-hidden"><div class="overflow-x-auto">';
@@ -2593,13 +2615,13 @@ function buildTransactionsPage() {
   html += '<tbody class="divide-y divide-gray-100">';
   if (paged.length === 0) html += '<tr><td colspan="8" class="text-center py-10 text-gray-400">ไม่พบรายการ</td></tr>';
   paged.forEach(function(t) {
-    var isR = t.type === 'receive';
+    var meta = txTypeMeta(t);
     html += '<tr>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500 whitespace-nowrap">' + formatDate(t.date) + '</td>';
-    html += '<td class="px-4 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + (isR?'badge-receive':'badge-withdraw') + '">' + (isR?'รับเข้า':'เบิกออก') + '</span></td>';
+    html += '<td class="px-4 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + meta.badge + '">' + meta.label + '</span></td>';
     html += '<td class="px-4 py-2.5 font-mono text-xs text-navy-700">' + escHtml(t.ref_id||'-') + '</td>';
     html += '<td class="px-4 py-2.5 font-medium text-gray-700 max-w-xs">' + escHtml(t.item_name||'-') + '</td>';
-    html += '<td class="px-4 py-2.5 text-center font-bold ' + (isR?'text-blue-700':'text-purple-700') + '">' + (isR?'+':'-') + t.quantity + '</td>';
+    html += '<td class="px-4 py-2.5 text-center font-bold ' + meta.text + '">' + meta.sign + t.quantity + '</td>';
     html += '<td class="px-4 py-2.5 text-center text-xs text-gray-500">' + (t.stock_before||0) + '</td>';
     html += '<td class="px-4 py-2.5 text-center text-xs font-bold text-gray-700">' + (t.stock_after||0) + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500">' + escHtml(t.actor_name||'-') + '</td>';
@@ -2953,7 +2975,7 @@ function exportReport(type) {
       rows = data.map(function(w){ return {withdraw_no:w.withdraw_no||'', date:(w.requested_at||'').split('T')[0], item_name:w.item_name||'', quantity:w.quantity_requested||0, quantity_approved:w.quantity_approved||0, unit:w.unit||'', requester_name:w.requested_by_name||'', department:w.department||NO_DEPT, status:w.status==='approved'?'อนุมัติ':w.status==='rejected'?'ปฏิเสธ':'รออนุมัติ', purpose:w.purpose||''}; });
     } else {
       headers = [{key:'type',title:'ประเภท'},{key:'date',title:'วันที่'},{key:'item_name',title:'รายการ'},{key:'quantity',title:'จำนวน'},{key:'user_name',title:'ผู้ทำรายการ'},{key:'note',title:'หมายเหตุ'}];
-      rows = data.map(function(t){ var item=_itemsData.find(function(i){return i.id===t.item_id})||{}; return {type:t.type==='receive'?'รับเข้า':'เบิกออก', date:(t.date||'').split('T')[0], item_name:item.name||t.item_id, quantity:t.quantity||0, user_name:t.user_name||'', note:t.note||''}; });
+      rows = data.map(function(t){ var item=_itemsData.find(function(i){return i.id===t.item_id})||{}; return {type:txTypeMeta(t).label, date:(t.date||'').split('T')[0], item_name:item.name||t.item_id, quantity:t.quantity||0, user_name:t.user_name||'', note:t.note||''}; });
     }
     downloadXlsx(rows, headers, 'รายงาน_' + type);
   }).catch(function() { hideLoading(); showError('Export ไม่สำเร็จ'); });
@@ -3414,6 +3436,15 @@ function buildSettingsPage(cfg) {
   html += fieldHTML('ระดับสต็อกขั้นต่ำเริ่มต้น', 'cfgLowStock', 'number', cfg.low_stock_threshold||5);
   html += '</div></div>';
 
+  // ---------- ซ่อมข้อมูลวัสดุ ----------
+  html += '<div class="card"><div class="card-header"><h3 class="font-semibold text-gray-700 flex items-center gap-2"><i class="fi fi-rr-wrench-simple text-amber-600"></i> ซ่อมข้อมูลวัสดุที่หาย</h3></div>';
+  html += '<div class="card-body space-y-3">';
+  html += '<p class="text-xs text-gray-500">ใช้กรณีรายการวัสดุแสดงเป็นช่องว่าง (เหลือแต่รหัส SUP-xxx) ระบบจะกู้ชื่อ/ขนาด/หน่วย/หมวดหมู่ คืนจากข้อมูลตั้งต้นและประวัติการเคลื่อนไหว โดยไม่แตะยอดสต็อก</p>';
+  html += '<div class="flex gap-2 flex-wrap"><button onclick="doRepairItems(true)" class="btn-secondary btn-sm"><i class="fi fi-rr-search mr-1"></i>ตรวจสอบก่อน (ไม่แก้ไข)</button>';
+  html += '<button onclick="doRepairItems(false)" class="btn-primary btn-sm"><i class="fi fi-rr-wrench-simple mr-1"></i>ซ่อมข้อมูล</button></div>';
+  html += '<div id="repairResult" class="text-xs text-gray-600"></div>';
+  html += '</div></div>';
+
   html += '<div class="flex justify-end gap-3">';
   html += '<button onclick="renderSettings()" class="btn-secondary"><i class="fi fi-rr-refresh mr-1"></i>รีเซ็ต</button>';
   html += '<button onclick="saveSettings()" class="btn-primary"><i class="fi fi-rr-disk mr-1"></i>บันทึกการตั้งค่า</button></div>';
@@ -3430,6 +3461,25 @@ function buildSettingsPage(cfg) {
       }
     }).catch(function(){});
   }
+}
+
+/** doRepairItems — กู้ข้อมูลวัสดุที่หายจากบั๊กนับสต็อกเวอร์ชันเก่า */
+function doRepairItems(dryRun) {
+  showLoading(dryRun ? 'กำลังตรวจสอบ...' : 'กำลังซ่อมข้อมูล...');
+  callAPI('repairItems', AUTH.token, !!dryRun).then(function(res) {
+    hideLoading();
+    var el = document.getElementById('repairResult');
+    if (!res || !res.success) { showError((res && res.message) || 'ไม่สำเร็จ'); return; }
+    if (el) {
+      var lines = (res.data||[]).slice(0, 30).map(function(r) {
+        return '<li>' + escHtml(r.item_code||'-') + ' — ' + escHtml(r.name||'-') + ' <span class="text-gray-400">(' + (r.fields||[]).join(', ') + ')</span></li>';
+      }).join('');
+      el.innerHTML = '<p class="font-medium text-gray-700 mb-1">' + escHtml(res.message) + '</p>'
+        + (lines ? '<ul class="list-disc list-inside space-y-0.5">' + lines + '</ul>' : '');
+    }
+    if (dryRun) showSuccess(res.message);
+    else { _itemsData = []; _itemsCacheTime = 0; showSuccess(res.message); }
+  }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
 function saveSettings() {

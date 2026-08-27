@@ -88,6 +88,8 @@ function doGet(e) {
         case 'addItemsBulk':        result = addItemsBulk(args[0], args[1]); break;
         case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
         case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
+        case 'adjustStock':         result = adjustStock(args[0], args[1]); break;
+        case 'repairItems':         result = repairItems(args[0], args[1]); break;
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
         case 'getReceives':         result = getReceives(args[0], args[1]); break;
         case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
@@ -184,6 +186,7 @@ function doPost(e) {
     switch (fn) {
       case 'uploadFile':    result = uploadFile(args[0], args[1], args[2], args[3]); break;
       case 'addItemsBulk': result = addItemsBulk(args[0], args[1]); break;
+      case 'adjustStock':  result = adjustStock(args[0], args[1]); break;
       case 'addWithdrawalBulk': result = addWithdrawalBulk(args[0], args[1]); break;
       default: result = { success: false, message: 'Use GET for ' + fn };
     }
@@ -563,28 +566,197 @@ function addItemsBulk(token, itemList) {
   }
 }
 
-/** updateItem — แก้ไขรายการวัสดุ (Admin) */
+/** updateItem — แก้ไขรายการวัสดุ (Admin)
+ *  อัปเดตเฉพาะฟิลด์ที่ส่งมาจริงเท่านั้น (partial update)
+ *  ถ้าเขียนทุกฟิลด์ทุกครั้ง ผู้เรียกที่ส่งมาไม่ครบจะทำให้ค่าเดิมหาย (undefined โดน JSON.stringify ตัดทิ้ง)
+ */
 function updateItem(token, itemId, itemData) {
   try {
     var session = validateSession(token);
     if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
-    var updated = updateInSheet('Items', itemId, {
-      name: itemData.name,
-      size: itemData.size,
-      unit: itemData.unit,
-      barcode: itemData.barcode || '',
-      category: itemData.category,
-      price: parseFloat(itemData.price) || 0,
-      supplier: itemData.supplier || '',
-      storage_location: itemData.storage_location || '',
-      min_stock: parseInt(itemData.min_stock),
-      description: itemData.description,
-      image_file_id: itemData.image_file_id || ''
+    if (!itemData || typeof itemData !== 'object') return { success: false, message: 'ไม่มีข้อมูลที่จะแก้ไข' };
+
+    var updates = {};
+    var textFields = ['name','size','unit','barcode','category','supplier','storage_location','description','image_file_id'];
+    textFields.forEach(function(f) {
+      if (itemData[f] !== undefined && itemData[f] !== null) updates[f] = String(itemData[f]);
     });
+    if (itemData.price !== undefined && itemData.price !== null && itemData.price !== '') {
+      updates.price = parseFloat(itemData.price) || 0;
+    }
+    if (itemData.min_stock !== undefined && itemData.min_stock !== null && itemData.min_stock !== '') {
+      updates.min_stock = parseInt(itemData.min_stock) || 0;
+    }
+    // current_stock ห้ามแก้ผ่านช่องทางนี้ — ต้องผ่าน addReceive / addWithdrawal / adjustStock เพื่อให้มี Transaction กำกับ
+    if (Object.keys(updates).length === 0) return { success: false, message: 'ไม่มีข้อมูลที่จะแก้ไข' };
+
+    var updated = updateInSheet('Items', itemId, updates);
     if (!updated) return { success: false, message: 'ไม่พบรายการ' };
     return { success: true, message: 'แก้ไขเรียบร้อย' };
   } catch(err) {
     logError('updateItem', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** repairItems — ซ่อมรายการวัสดุที่ข้อมูลหาย (Admin)
+ *  ใช้แก้ผลเสียหายจากบั๊กเดิมที่หน้า "นับสต็อก" เรียก updateItem ด้วย current_stock อย่างเดียว
+ *  ทำให้ name / size / unit / category / description หายไปจากแถว
+ *  แหล่งกู้คืน: 1) SEED_ITEMS ตาม item_code (SUP-001..)  2) ประวัติใน Transactions (item_name / unit)
+ *  dryRun = true จะแสดงผลว่าจะซ่อมอะไรบ้างโดยไม่เขียนจริง
+ */
+function repairItems(token, dryRun) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+
+    // ทำ index จาก SEED_ITEMS ตามรหัสที่ระบบสร้างตอน seed (SUP-001, SUP-002, ...)
+    var seedByCode = {};
+    SEED_ITEMS.forEach(function(it, idx) {
+      seedByCode['SUP-' + String(idx + 1).padStart(3, '0')] = it;
+    });
+
+    // ทำ index จากประวัติ Transactions (ล่าสุดชนะ) เผื่อวัสดุที่เพิ่มเองภายหลัง
+    var histById = {};
+    getSheetData('Transactions').forEach(function(t) {
+      if (!t.item_id || !t.item_name) return;
+      histById[t.item_id] = { name: t.item_name, unit: t.unit || '' };
+    });
+
+    var isBlank = function(v) { return v === undefined || v === null || String(v).trim() === ''; };
+    var items   = getSheetData('Items');
+    var repaired = [];
+    var unresolved = [];
+
+    items.forEach(function(item) {
+      var seed = seedByCode[item.item_code];
+      var hist = histById[item.id];
+      var fix  = {};
+
+      if (isBlank(item.name)) {
+        if (seed) fix.name = seed.name;
+        else if (hist && hist.name) fix.name = hist.name;
+      }
+      if (isBlank(item.unit)) {
+        if (seed) fix.unit = seed.unit;
+        else if (hist && hist.unit) fix.unit = hist.unit;
+      }
+      if (isBlank(item.size)     && seed) fix.size     = seed.size;
+      if (isBlank(item.category)) fix.category = seed ? seed.category : 'อื่นๆ';
+      if (item.description === undefined || item.description === null) fix.description = '';
+      if (item.min_stock === undefined || item.min_stock === null || isNaN(parseInt(item.min_stock))) {
+        fix.min_stock = seed ? seed.min_stock : 5;
+      }
+
+      if (Object.keys(fix).length === 0) return;
+
+      if (isBlank(item.name) && isBlank(fix.name)) {
+        unresolved.push(item.item_code || item.id);  // ไม่มีแหล่งกู้ชื่อ ต้องแก้เอง
+        return;
+      }
+      if (!dryRun) updateInSheet('Items', item.id, fix);
+      repaired.push({ item_code: item.item_code, fields: Object.keys(fix), name: fix.name || item.name });
+    });
+
+    return {
+      success: true,
+      dry_run: !!dryRun,
+      repaired: repaired.length,
+      unresolved: unresolved,
+      data: repaired,
+      message: (dryRun ? 'ตรวจพบรายการที่ต้องซ่อม ' : 'ซ่อมข้อมูลเรียบร้อย ') + repaired.length + ' รายการ'
+        + (unresolved.length ? ' (กู้ชื่อไม่ได้ ' + unresolved.length + ' รายการ: ' + unresolved.join(', ') + ')' : '')
+    };
+  } catch(err) {
+    logError('repairItems', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** adjustStock — ปรับยอดสต็อกจากการนับสต็อก (staff/admin)
+ *  รับ adjustments = [{ item_id, actual }] ปรับ current_stock พร้อมบันทึก Transaction ทุกรายการ
+ *  หมายเหตุ: ห้ามใช้ updateItem ปรับสต็อก เพราะ updateItem ไม่แตะ current_stock และไม่มี log
+ */
+function adjustStock(token, adjustments) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role === 'employee') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    if (!adjustments || !adjustments.length) return { success: false, message: 'ไม่มีรายการที่ต้องปรับยอด' };
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(30000);
+    try {
+      var items    = getSheetData('Items');
+      var byId     = {};
+      items.forEach(function(i){ byId[i.id] = i; });
+
+      var today    = new Date().toISOString().split('T')[0];
+      var refNo    = 'ADJ-' + (new Date().getFullYear() + 543) + '-' + Utilities.formatDate(new Date(), 'Asia/Bangkok', 'MMddHHmmss');
+      var updated  = [];
+      var errors   = [];
+
+      adjustments.forEach(function(a) {
+        var item = byId[a.item_id];
+        if (!item) { errors.push('ไม่พบรายการวัสดุ (' + a.item_id + ')'); return; }
+
+        var actual = parseInt(a.actual);
+        if (isNaN(actual) || actual < 0) { errors.push(item.name + ': จำนวนที่นับไม่ถูกต้อง'); return; }
+
+        var before = parseInt(item.current_stock) || 0;
+        if (actual === before) return; // ไม่มีผลต่าง ข้าม
+        var diff = actual - before;
+
+        updateInSheet('Items', item.id, { current_stock: actual });
+
+        saveToSheet('Transactions', {
+          id: Utilities.getUuid(),
+          type: 'adjust',
+          item_id: item.id,
+          item_name: item.name,
+          item_code: item.item_code,
+          unit: item.unit,
+          quantity: Math.abs(diff),
+          diff: diff,
+          stock_before: before,
+          stock_after: actual,
+          ref_id: refNo,
+          actor_id: session.user_id,
+          actor_name: session.name,
+          actor_role: session.role,
+          note: a.note || 'ปรับยอดจากการนับสต็อก',
+          date: today
+        });
+
+        updated.push({ item_id: item.id, item_name: item.name, before: before, after: actual, diff: diff });
+      });
+
+      if (updated.length > 0) {
+        var NL    = '\n';
+        var lines = updated.slice(0, 15).map(function(u) {
+          return '• ' + u.item_name + ': ' + u.before + ' → ' + u.after + ' (' + (u.diff > 0 ? '+' : '') + u.diff + ')';
+        }).join(NL);
+        if (updated.length > 15) lines += NL + '... และอีก ' + (updated.length - 15) + ' รายการ';
+        sendTelegram('<b>ปรับยอดจากการนับสต็อก</b> #' + refNo
+          + NL + 'จำนวน: ' + updated.length + ' รายการ'
+          + NL + lines
+          + NL + 'โดย: ' + session.name
+          + NL + 'วันที่: ' + today);
+      }
+
+      return {
+        success: errors.length === 0,
+        updated: updated.length,
+        failed: errors.length,
+        errors: errors,
+        ref_no: refNo,
+        data: updated,
+        message: errors.length === 0
+          ? (updated.length > 0 ? 'ปรับยอดเรียบร้อย ' + updated.length + ' รายการ' : 'ยอดตรงกับระบบทุกรายการ ไม่มีการปรับ')
+          : 'ปรับยอดสำเร็จ ' + updated.length + ' รายการ ไม่สำเร็จ ' + errors.length + ' รายการ'
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('adjustStock', err);
     return { success: false, message: err.message };
   }
 }
