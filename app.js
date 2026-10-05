@@ -6,8 +6,18 @@
 
 // ===== CONSTANTS =====
 var ITEMS_PER_PAGE = 20;
-var ROLE_LABELS = { admin:'ผู้ดูแลระบบ', staff:'เจ้าหน้าที่คลัง', employee:'พนักงาน' };
+var ROLE_LABELS = { admin:'ผู้ดูแลระบบ', staff:'เจ้าหน้าที่คลัง', accountant:'เจ้าหน้าที่บัญชี', employee:'พนักงาน' };
+var ROLE_COLORS = { admin:'bg-navy-100 text-navy-700', staff:'bg-blue-100 text-blue-700', accountant:'bg-purple-100 text-purple-700', employee:'bg-green-100 text-green-700' };
 var NO_DEPT     = 'ไม่ระบุแผนก';
+
+/** canApprove — อนุมัติ/ปฏิเสธคำขอเบิกได้: ผู้ดูแลระบบ และเจ้าหน้าที่บัญชี */
+function canApprove() {
+  return !!AUTH.user && (AUTH.user.role === 'admin' || AUTH.user.role === 'accountant');
+}
+/** canStocktake — ตรวจนับและบันทึกฉบับร่างได้: เจ้าหน้าที่บัญชี และผู้ดูแลระบบ (ยืนยันปรับยอดได้เฉพาะผู้ดูแลระบบ) */
+function canStocktake() {
+  return canApprove();
+}
 
 // ===== CONFIG / แผนก (โหลดครั้งเดียวตอนเข้าระบบ) =====
 var _APP_CONFIG  = {};
@@ -294,10 +304,10 @@ function showMainShell() {
   var notEmp   = AUTH.user.role !== 'employee';
   document.getElementById('menuItems').style.display    = isAdmin ? '' : 'none';
   document.getElementById('menuReceive').style.display  = notEmp  ? '' : 'none';
-  document.getElementById('menuStocktake').style.display = notEmp ? '' : 'none';
+  document.getElementById('menuStocktake').style.display = canStocktake() ? '' : 'none';
   document.getElementById('menuPrintQR').style.display   = notEmp ? '' : 'none';
   document.getElementById('menuInventorySection').style.display = notEmp ? '' : 'none';
-  document.getElementById('menuApprove').style.display  = isAdmin ? '' : 'none';
+  document.getElementById('menuApprove').style.display  = canApprove() ? '' : 'none';
   document.getElementById('menuAdminSection').style.display = isAdmin ? '' : 'none';
   document.getElementById('menuReportLabel').style.display  = notEmp ? '' : 'none';
   document.getElementById('menuReportSection').style.display= notEmp ? '' : 'none';
@@ -414,6 +424,7 @@ function renderDashboard() {
     var badge = document.getElementById('pendingBadge');
     if (kpi.pending > 0) { badge.textContent = kpi.pending; badge.classList.remove('hidden'); }
     else { badge.classList.add('hidden'); }
+    updateStocktakeBadge(kpi.pending_stocktake);
 
     var lowBadge = document.getElementById('lowStockBadge');
     if (kpi.low_stock > 0) { lowBadge.textContent = kpi.low_stock; lowBadge.classList.remove('hidden'); }
@@ -501,7 +512,7 @@ function renderDashboard() {
     html += '</div></div></div>';
 
     html += '<div class="card"><div class="card-header"><h3 class="font-semibold text-gray-700 text-sm">คำขอเบิกรออนุมัติ</h3>';
-    if (AUTH.user.role === 'admin') html += '<button onclick="loadPage(\'approve\')" class="text-xs text-navy-600 hover:underline">จัดการ</button>';
+    if (canApprove()) html += '<button onclick="loadPage(\'approve\')" class="text-xs text-navy-600 hover:underline">จัดการ</button>';
     html += '</div><div class="card-body p-0"><div class="divide-y">';
     if (d.recent_pending && d.recent_pending.length > 0) {
       d.recent_pending.forEach(function(w) {
@@ -509,7 +520,7 @@ function renderDashboard() {
         html += '<div class="w-8 h-8 bg-amber-100 rounded-lg flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-time-forward text-amber-600 text-sm"></i></div>';
         html += '<div class="flex-1 min-w-0"><p class="text-xs font-medium text-gray-700 truncate">' + escHtml(w.item_name) + '</p>';
         html += '<p class="text-xs text-gray-400">' + w.quantity_requested + ' ' + w.unit + ' • ' + escHtml(w.requested_by_name) + '</p></div>';
-        if (AUTH.user.role === 'admin') {
+        if (canApprove()) {
           html += '<div class="flex gap-1 flex-shrink-0">';
           html += '<button onclick="quickApprove(\'' + w.id + '\',' + w.quantity_requested + ')" class="btn-success btn-sm text-xs px-2 py-1 rounded-lg"><i class="fi fi-rr-check"></i></button>';
           html += '<button onclick="quickReject(\'' + w.id + '\')" class="btn-danger btn-sm text-xs px-2 py-1 rounded-lg"><i class="fi fi-rr-cross"></i></button></div>';
@@ -1131,7 +1142,7 @@ function itemFormHTML(item) {
     + fieldHTML('ขนาดบรรจุ', 'itemSize', 'text', item.size||'')
     + fieldHTML('หน่วย *', 'itemUnit', 'text', item.unit||'')
     + barcodeFieldHTML(item.barcode||'')
-    + fieldHTML('หมวดหมู่', 'itemCategory', 'text', item.category||'วัสดุทำความสะอาด')
+    + categoryFieldHTML(item.id ? (item.category||'') : (item.category||'วัสดุทำความสะอาด'))
     + fieldHTML('ราคาต่อหน่วย', 'itemPrice', 'number', item.price||0, '', '0.01')
     + fieldHTML('ผู้จำหน่าย/ซัพพลายเออร์', 'itemSupplier', 'text', item.supplier||'')
     + (item.id
@@ -1157,6 +1168,46 @@ function textareaFieldHTML(label, id, value, extra) {
     + '<label class="form-label">' + escHtml(label) + '</label>'
     + '<textarea id="' + id + '" rows="2" class="form-input">' + escHtml(value||'') + '</textarea></div>';
 }
+var NEW_CATEGORY_VALUE = '__new__';
+var DEFAULT_CATEGORIES = ['วัสดุทำความสะอาด','น้ำยาทำความสะอาด','อุปกรณ์ทำความสะอาด','อุปกรณ์ป้องกัน','วัสดุบรรจุภัณฑ์','อุปกรณ์จัดเก็บ','อุปกรณ์ไฟฟ้า','อุปกรณ์อื่นๆ','อื่นๆ'];
+
+/** categoryOptionList — หมวดหมู่ที่เลือกได้: หมวดหมู่ที่มีใช้อยู่ในระบบ + หมวดหมู่ตั้งต้น */
+function categoryOptionList() {
+  var cats = getCategoryList(_itemsData);
+  DEFAULT_CATEGORIES.forEach(function(c){ if (cats.indexOf(c) === -1) cats.push(c); });
+  return cats.sort(function(a, b){ return a.localeCompare(b, 'th'); });
+}
+
+/** categoryFieldHTML — ช่องหมวดหมู่แบบ Dropdown (เลือก "+ เพิ่มหมวดหมู่ใหม่" เพื่อพิมพ์ชื่อหมวดหมู่เองได้) */
+function categoryFieldHTML(value) {
+  value = value || '';
+  var cats = categoryOptionList();
+  if (value && cats.indexOf(value) === -1) cats.unshift(value);
+  var html = '<div><label class="form-label">หมวดหมู่</label>'
+    + '<select id="itemCategory" class="form-input" onchange="onItemCategoryChange(this)">'
+    + '<option value="">— เลือกหมวดหมู่ —</option>';
+  cats.forEach(function(c) {
+    html += '<option value="' + escHtml(c) + '"' + (c === value ? ' selected' : '') + '>' + escHtml(c) + '</option>';
+  });
+  html += '<option value="' + NEW_CATEGORY_VALUE + '">+ เพิ่มหมวดหมู่ใหม่...</option></select>'
+    + '<input type="text" id="itemCategoryNew" placeholder="พิมพ์ชื่อหมวดหมู่ใหม่" class="form-input mt-2 hidden"></div>';
+  return html;
+}
+function onItemCategoryChange(sel) {
+  var inp = document.getElementById('itemCategoryNew');
+  if (!inp) return;
+  var isNew = sel.value === NEW_CATEGORY_VALUE;
+  inp.classList.toggle('hidden', !isNew);
+  if (isNew) inp.focus();
+}
+/** readItemCategory — ค่าหมวดหมู่จากฟอร์ม (รวมกรณีพิมพ์หมวดหมู่ใหม่) */
+function readItemCategory() {
+  var sel = document.getElementById('itemCategory');
+  if (!sel) return '';
+  if (sel.value !== NEW_CATEGORY_VALUE) return sel.value;
+  return ((document.getElementById('itemCategoryNew')||{}).value||'').trim();
+}
+
 function barcodeFieldHTML(value) {
   return '<div><label class="form-label">บาร์โค้ด</label>'
     + '<div class="relative"><i class="fi fi-rr-barcode-read absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>'
@@ -1188,9 +1239,13 @@ function readItemForm() {
   var unit = (document.getElementById('itemUnit')||{}).value||'';
   if (!name.trim()) { showError('กรุณากรอกชื่อวัสดุ'); return null; }
   if (!unit.trim()) { showError('กรุณากรอกหน่วย'); return null; }
+  var category = readItemCategory();
+  if (!category && (document.getElementById('itemCategory')||{}).value === NEW_CATEGORY_VALUE) {
+    showError('กรุณาพิมพ์ชื่อหมวดหมู่ใหม่'); return null;
+  }
   return {
     name: name, size: (document.getElementById('itemSize')||{}).value||'',
-    unit: unit, category: (document.getElementById('itemCategory')||{}).value||'',
+    unit: unit, category: category,
     barcode: (document.getElementById('itemBarcode')||{}).value||'',
     price: parseFloat((document.getElementById('itemPrice')||{}).value)||0,
     supplier: (document.getElementById('itemSupplier')||{}).value||'',
@@ -1231,7 +1286,7 @@ function removeItemImage() {
   var size = (document.getElementById('itemSize')||{}).value||'';
   var unit = (document.getElementById('itemUnit')||{}).value||'';
   var barcode = (document.getElementById('itemBarcode')||{}).value||'';
-  var cat  = (document.getElementById('itemCategory')||{}).value||'';
+  var cat  = readItemCategory();
   var price = (document.getElementById('itemPrice')||{}).value||0;
   var supplier = (document.getElementById('itemSupplier')||{}).value||'';
   var location = (document.getElementById('itemLocation')||{}).value||'';
@@ -1314,11 +1369,66 @@ function showItemDetailModal(itemId) {
       + '</div>';
   }
 
+  // ประวัติการรับเข้า (วันที่ / จำนวน / ร้าน / ราคา) — โหลดเมื่อกดเปิดดู
+  body += '<div class="border border-gray-200 rounded-xl overflow-hidden">'
+    + '<button type="button" onclick="toggleItemReceiveHistory(\'' + item.id + '\')" class="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-navy-700 hover:bg-navy-50 transition">'
+    + '<span><i class="fi fi-rr-inbox-in mr-2"></i>ประวัติการรับเข้า</span>'
+    + '<i id="itemRecvChevron" class="fi fi-rr-angle-small-down text-base"></i></button>'
+    + '<div id="itemRecvHistory" class="hidden border-t border-gray-200"></div></div>';
+
   body += '</div>';
 
   var footer = '<button onclick="closeModal()" class="btn-secondary">ปิด</button>'
     + '<button onclick="openWithdrawModal(\'' + item.id + '\')" class="btn-primary"><i class="fi fi-rr-inbox-out mr-1"></i>เบิกวัสดุ</button>';
   openModal('รายละเอียดวัสดุ', body, footer);
+}
+
+function formatMoney(n) {
+  return Number(n || 0).toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/** toggleItemReceiveHistory — เปิด/ปิดประวัติการรับเข้าของวัสดุในหน้ารายละเอียด (โหลดจากเซิร์ฟเวอร์ครั้งแรกที่เปิด) */
+function toggleItemReceiveHistory(itemId) {
+  var box = document.getElementById('itemRecvHistory');
+  var chevron = document.getElementById('itemRecvChevron');
+  if (!box) return;
+  var willOpen = box.classList.contains('hidden');
+  box.classList.toggle('hidden', !willOpen);
+  if (chevron) chevron.className = 'fi ' + (willOpen ? 'fi-rr-angle-small-up' : 'fi-rr-angle-small-down') + ' text-base';
+  if (!willOpen || box.getAttribute('data-loaded')) return;
+
+  box.innerHTML = '<p class="text-center text-xs text-gray-400 py-4">กำลังโหลด...</p>';
+  callAPI('getReceives', AUTH.token, { item_id: itemId }).then(function(res) {
+    if (!res || !res.success) { box.innerHTML = '<p class="text-center text-xs text-red-500 py-4">' + escHtml((res && res.message) || 'โหลดประวัติไม่สำเร็จ') + '</p>'; return; }
+    // เผื่อ backend เวอร์ชันเก่าที่ยังไม่กรองตาม item_id ให้
+    var rows = (res.data || []).filter(function(r){ return r.item_id === itemId; });
+    rows.sort(function(a, b){ return (b.date || '') > (a.date || '') ? 1 : -1; });
+    box.setAttribute('data-loaded', '1');
+    box.innerHTML = itemReceiveHistoryHTML(rows);
+  }).catch(function() {
+    box.innerHTML = '<p class="text-center text-xs text-red-500 py-4">โหลดประวัติไม่สำเร็จ</p>';
+  });
+}
+
+function itemReceiveHistoryHTML(rows) {
+  if (!rows.length) return '<p class="text-center text-xs text-gray-400 py-4">ยังไม่มีประวัติการรับเข้า</p>';
+  var totalQty = 0;
+  var html = '<div class="max-h-64 overflow-y-auto"><table class="w-full text-xs">'
+    + '<thead class="bg-gray-50 text-gray-500 sticky top-0"><tr>'
+    + '<th class="px-3 py-2 text-left">วันที่รับเข้า</th><th class="px-3 py-2 text-center">จำนวน</th>'
+    + '<th class="px-3 py-2 text-left">ชื่อร้าน</th><th class="px-3 py-2 text-right">ราคา/หน่วย</th></tr></thead>'
+    + '<tbody class="divide-y divide-gray-100">';
+  rows.forEach(function(r) {
+    totalQty += Number(r.quantity) || 0;
+    html += '<tr title="' + escHtml((r.receive_no || '') + (r.received_by_name ? ' • รับโดย ' + r.received_by_name : '') + (r.note ? ' • ' + r.note : '')) + '">'
+      + '<td class="px-3 py-2 text-gray-600 whitespace-nowrap">' + formatDate(r.date) + '</td>'
+      + '<td class="px-3 py-2 text-center font-bold text-blue-700 whitespace-nowrap">+' + r.quantity + ' ' + escHtml(r.unit || '') + '</td>'
+      + '<td class="px-3 py-2 text-gray-700">' + escHtml(r.supplier || '-') + '</td>'
+      + '<td class="px-3 py-2 text-right text-gray-700 whitespace-nowrap">' + (Number(r.unit_price) ? formatMoney(r.unit_price) : '-') + '</td></tr>';
+  });
+  html += '</tbody></table></div>'
+    + '<p class="text-xs text-gray-400 px-3 py-2 border-t border-gray-100">รับเข้าทั้งหมด ' + rows.length + ' ครั้ง รวม ' + totalQty + ' ' + escHtml(rows[0].unit || '') + '</p>';
+  return html;
 }
 
 // ===== QR CODE =====
@@ -1521,14 +1631,18 @@ function buildReceivePage() {
   html += '<table class="w-full text-sm"><thead class="bg-gray-50 text-xs text-gray-600">';
   html += '<tr><th class="px-4 py-3 text-left">เลขที่รับ</th><th class="px-4 py-3 text-left">วันที่</th>';
   html += '<th class="px-4 py-3 text-left">รายการ</th><th class="px-4 py-3 text-center">จำนวน</th>';
+  html += '<th class="px-4 py-3 text-left">ร้าน/ผู้จำหน่าย</th><th class="px-4 py-3 text-right">ราคา/หน่วย</th><th class="px-4 py-3 text-right">รวมเงิน</th>';
   html += '<th class="px-4 py-3 text-left">ผู้รับ</th><th class="px-4 py-3 text-left">หมายเหตุ</th></tr></thead>';
   html += '<tbody class="divide-y divide-gray-100">';
-  if (paged.length === 0) html += '<tr><td colspan="6" class="text-center py-10 text-gray-400">ยังไม่มีรายการรับเข้า</td></tr>';
+  if (paged.length === 0) html += '<tr><td colspan="9" class="text-center py-10 text-gray-400">ยังไม่มีรายการรับเข้า</td></tr>';
   paged.forEach(function(r) {
     html += '<tr><td class="px-4 py-2.5 font-mono text-xs text-navy-700">' + escHtml(r.receive_no) + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-600">' + formatDate(r.date) + '</td>';
     html += '<td class="px-4 py-2.5 font-medium text-gray-700">' + escHtml(r.item_name||'-') + '</td>';
-    html += '<td class="px-4 py-2.5 text-center font-bold text-blue-700">+' + r.quantity + ' ' + escHtml(r.unit||'') + '</td>';
+    html += '<td class="px-4 py-2.5 text-center font-bold text-blue-700 whitespace-nowrap">+' + r.quantity + ' ' + escHtml(r.unit||'') + '</td>';
+    html += '<td class="px-4 py-2.5 text-xs text-gray-600">' + escHtml(r.supplier||'-') + '</td>';
+    html += '<td class="px-4 py-2.5 text-xs text-right text-gray-600 whitespace-nowrap">' + (Number(r.unit_price) ? formatMoney(r.unit_price) : '-') + '</td>';
+    html += '<td class="px-4 py-2.5 text-xs text-right text-gray-600 whitespace-nowrap">' + (Number(r.total_price) ? formatMoney(r.total_price) : '-') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-500">' + escHtml(r.received_by_name||'-') + '</td>';
     html += '<td class="px-4 py-2.5 text-xs text-gray-400">' + escHtml(r.note||'-') + '</td></tr>';
   });
@@ -1621,8 +1735,17 @@ function openReceiveDetailModal(itemId) {
   var body = '<div class="space-y-4">';
   body += '<input type="hidden" id="recItemId" value="' + itemId + '">';
   body += '<p class="text-sm text-gray-600">รายการ: <b>' + escHtml(item.name) + '</b> (คงเหลือ ' + item.current_stock + ' ' + item.unit + ')</p>';
+  body += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">';
   body += fieldHTML('จำนวนที่รับ *', 'recQty', 'number', 1);
-  body += fieldHTML('วันที่', 'recDate', 'date', new Date().toISOString().split('T')[0]);
+  body += fieldHTML('วันที่รับเข้า', 'recDate', 'date', new Date().toISOString().split('T')[0]);
+  // ร้าน/ราคา ของการรับเข้าครั้งนี้ — เก็บเป็นประวัติให้กดดูย้อนหลังได้ที่หน้ารายละเอียดวัสดุ
+  var suppliers = {};
+  _itemsData.forEach(function(i){ if (i.supplier) suppliers[i.supplier] = 1; });
+  body += '<div><label class="form-label">ชื่อร้าน/ผู้จำหน่าย</label>'
+    + '<input type="text" id="recSupplier" list="recSupplierList" value="' + escHtml(item.supplier||'') + '" placeholder="ร้านที่ซื้อ" class="form-input">'
+    + '<datalist id="recSupplierList">' + Object.keys(suppliers).map(function(n){ return '<option value="' + escHtml(n) + '">'; }).join('') + '</datalist></div>';
+  body += fieldHTML('ราคาต่อหน่วย (บาท)', 'recPrice', 'number', item.price||0, '', '0.01');
+  body += '</div>';
   body += '<div class="sm:col-span-2"><label class="form-label">หมายเหตุ</label><textarea id="recNote" class="form-input" rows="2"></textarea></div>';
   body += '</div>';
   var footer = '<button onclick="closeModal()" class="btn-secondary">ยกเลิก</button>'
@@ -1635,84 +1758,405 @@ function submitReceive() {
   var qty    = parseInt((document.getElementById('recQty')||{}).value||0);
   var date   = (document.getElementById('recDate')||{}).value||'';
   var note   = (document.getElementById('recNote')||{}).value||'';
+  var supplier = ((document.getElementById('recSupplier')||{}).value||'').trim();
+  var price    = parseFloat((document.getElementById('recPrice')||{}).value)||0;
   if (!itemId) { showError('กรุณาเลือกวัสดุ'); return; }
   if (!qty || qty <= 0) { showError('จำนวนไม่ถูกต้อง'); return; }
+  if (price < 0) { showError('ราคาไม่ถูกต้อง'); return; }
   showLoading('กำลังบันทึก...');
-  callAPI('addReceive', AUTH.token, { item_id:itemId, quantity:qty, date:date, note:note }).then(function(res) {
+  callAPI('addReceive', AUTH.token, { item_id:itemId, quantity:qty, date:date, note:note, supplier:supplier, unit_price:price }).then(function(res) {
     hideLoading(); closeModal();
-    if (res.success) { showSuccess(res.message); renderReceive(); }
+    if (res.success) { showSuccess(res.message); _itemsCacheTime = 0; renderReceive(); }
     else showError(res.message);
   }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
 }
 
 // ===== STOCKTAKE =====
+// ขั้นตอน: เจ้าหน้าที่บัญชีตรวจนับ -> "บันทึกฉบับร่าง" (ยังไม่แตะสต็อก) -> ผู้ดูแลระบบ "ยืนยันปรับยอด" จึงปรับสต็อกจริง
+var NO_CATEGORY = 'ไม่ระบุหมวดหมู่';
+var _stDrafts = [];     // ฉบับร่างที่รอยืนยัน + ประวัติการตรวจนับล่าสุด
+var _stDraft  = null;   // ฉบับร่างที่รอยืนยันอยู่ (ระบบให้มีได้ครั้งละ 1 ฉบับ)
+var _stCounts = {};     // item_id -> จำนวนที่นับจริงที่กรอกอยู่บนจอ
+var _stMoved  = {};     // item_id -> บรรทัดในฉบับร่างที่ยอดระบบเปลี่ยนไปหลังบันทึกร่าง
+var _stDirty  = false;  // มีการแก้ไขที่ยังไม่ได้บันทึกฉบับร่าง
+var _stView   = { sort:'category', category:'all', search:'', onlyDiff:false };
+
+function updateStocktakeBadge(n) {
+  var el = document.getElementById('stocktakeBadge');
+  if (!el) return;
+  if (n > 0 && canStocktake()) { el.textContent = n; el.classList.remove('hidden'); }
+  else el.classList.add('hidden');
+}
+
+/** stApiError — ข้อความ error จาก backend (แปลกรณี Apps Script ยังเป็นเวอร์ชันเก่าที่ไม่มีฟังก์ชันฉบับร่าง) */
+function stApiError(res, fallback) {
+  var msg = (res && res.message) || fallback || 'เกิดข้อผิดพลาด';
+  if (/Unknown function|Use GET for/i.test(msg)) {
+    return 'ระบบหลังบ้านยังเป็นเวอร์ชันเก่า กรุณานำไฟล์ code.gs ล่าสุดไปวางใน Google Apps Script แล้ว Deploy เวอร์ชันใหม่';
+  }
+  return msg;
+}
+
 function renderStocktake() {
+  if (!canStocktake()) { loadPage('dashboard'); return; }
   showLoading('โหลดข้อมูล...');
-  var itemsPromise = (_itemsData.length > 0 && (Date.now() - _itemsCacheTime) < ITEMS_CACHE_TTL)
-    ? Promise.resolve({ success: true, data: _itemsData })
-    : callAPI('getItems', AUTH.token).then(function(res){ _itemsData = res.data||[]; _itemsCacheTime = Date.now(); return res; });
-  itemsPromise.then(function(res) {
+  // ดึงยอดล่าสุดทุกครั้ง (ไม่ใช้แคช) เพราะผลต่างคำนวณเทียบกับยอดในระบบ ณ ตอนนับ
+  Promise.all([ callAPI('getItems', AUTH.token), callAPI('getStocktakes', AUTH.token) ]).then(function(results) {
     hideLoading();
-    _itemsData = res.data || [];
+    var itemsRes = results[0] || {};
+    var stRes    = results[1] || {};
+    if (!itemsRes.success) { showError(itemsRes.message || 'โหลดข้อมูลไม่สำเร็จ'); return; }
+    _itemsData = itemsRes.data || [];
+    _itemsCacheTime = Date.now();
+    if (!stRes.success) showError(stApiError(stRes, 'โหลดฉบับร่างไม่สำเร็จ'));
+    _stDrafts = (stRes.success && stRes.data) || [];
+    _stDraft  = _stDrafts.find(function(d){ return d.status === 'pending'; }) || null;
+    initStocktakeCounts();
+    updateStocktakeBadge(_stDraft ? 1 : 0);
     buildStocktakePage();
   }).catch(function() { hideLoading(); showError('โหลดข้อมูลไม่สำเร็จ'); });
 }
 
-function buildStocktakePage() {
-  var html = '<div class="fade-in space-y-4">';
-  html += '<div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">';
-  html += '<h3 class="font-semibold text-gray-700"><i class="fi fi-rr-clipboard-list text-navy-600 mr-2"></i>นับสต็อก</h3>';
-  html += '<button onclick="submitStocktake()" class="btn-primary"><i class="fi fi-rr-disk mr-1"></i>บันทึกการปรับยอด</button></div>';
-  html += '<p class="text-xs text-gray-500">กรอกจำนวนที่นับได้จริงในช่อง "นับจริง" แล้วกดบันทึก ระบบจะปรับยอดให้อัตโนมัติ</p>';
-  html += '<div class="card overflow-hidden"><div class="overflow-x-auto">';
-  html += '<table class="w-full text-sm"><thead class="bg-gray-50 text-gray-600 text-xs">';
-  html += '<tr><th class="px-4 py-3 text-left">รหัส/ชื่อ</th><th class="px-4 py-3 text-center">ระบบ</th><th class="px-4 py-3 text-center">นับจริง</th><th class="px-4 py-3 text-center">ผลต่าง</th></tr></thead>';
-  html += '<tbody class="divide-y divide-gray-100">';
+/** initStocktakeCounts — ตั้งค่าช่อง "นับจริง" เริ่มต้น: ใช้ค่าจากฉบับร่างที่ค้างอยู่ ถ้าไม่มีให้เท่ากับยอดในระบบ */
+function initStocktakeCounts() {
+  _stCounts = {}; _stMoved = {}; _stDirty = false;
+  var lineById = {};
+  if (_stDraft) (_stDraft.lines || []).forEach(function(l){ lineById[l.item_id] = l; });
   _itemsData.forEach(function(item) {
-    html += '<tr data-st-id="' + item.id + '"><td class="px-4 py-3"><p class="font-medium text-gray-800">' + escHtml(item.name) + '</p><p class="text-xs text-gray-500">' + escHtml(item.item_code) + ' • ' + escHtml(item.unit) + '</p></td>';
-    html += '<td class="px-4 py-3 text-center font-bold text-gray-800">' + item.current_stock + '</td>';
-    html += '<td class="px-4 py-3 text-center"><input type="number" class="st-count w-20 border border-gray-300 rounded-lg px-2 py-1 text-center text-sm focus:outline-none focus:ring-2 focus:ring-navy-500" data-id="' + item.id + '" value="' + item.current_stock + '"></td>';
-    html += '<td class="px-4 py-3 text-center"><span class="st-diff text-xs font-medium" data-sys="' + item.current_stock + '">-</span></td></tr>';
-  });
-  html += '</tbody></table></div></div></div>';
-  document.getElementById('mainContent').innerHTML = html;
-  // Bind input events to update diff
-  document.querySelectorAll('.st-count').forEach(function(inp) {
-    inp.addEventListener('input', function() {
-      var sys = parseInt(inp.closest('tr').querySelector('.st-diff').getAttribute('data-sys')) || 0;
-      var act = parseInt(inp.value) || 0;
-      var diff = act - sys;
-      var diffEl = inp.closest('tr').querySelector('.st-diff');
-      if (diff === 0) { diffEl.textContent = '-'; diffEl.className = 'st-diff text-xs font-medium text-gray-400'; }
-      else if (diff > 0) { diffEl.textContent = '+' + diff; diffEl.className = 'st-diff text-xs font-medium text-green-600'; }
-      else { diffEl.textContent = '' + diff; diffEl.className = 'st-diff text-xs font-medium text-red-600'; }
-    });
+    var sys  = Number(item.current_stock) || 0;
+    var line = lineById[item.id];
+    if (!line) { _stCounts[item.id] = sys; return; }
+    if (Number(line.system) === sys) { _stCounts[item.id] = Number(line.actual); return; }
+    // ยอดระบบเปลี่ยนหลังบันทึกร่าง (มีการรับเข้า/เบิก) — คงผลต่างเดิมไว้ ซึ่งตรงกับที่ระบบจะใช้ปรับตอนยืนยัน
+    _stCounts[item.id] = Math.max(0, sys + (Number(line.actual) - Number(line.system)));
+    _stMoved[item.id]  = line;
   });
 }
 
-function submitStocktake() {
-  var inputs = document.querySelectorAll('.st-count');
-  var adjustments = [];
-  inputs.forEach(function(inp) {
-    var sys = parseInt(inp.closest('tr').querySelector('.st-diff').getAttribute('data-sys')) || 0;
-    var act = parseInt(inp.value) || 0;
-    if (act !== sys) adjustments.push({ item_id: inp.getAttribute('data-id'), actual: act, system: sys });
+function stCat(item) { return item.category || NO_CATEGORY; }
+
+/** stDiffOf — ผลต่าง (นับจริง - ระบบ) ของวัสดุ; ช่องที่เว้นว่างถือว่ายังไม่ได้นับ = ไม่มีผลต่าง */
+function stDiffOf(item) {
+  var v = _stCounts[item.id];
+  if (v === '' || v === undefined || v === null || isNaN(v)) return 0;
+  return Number(v) - (Number(item.current_stock) || 0);
+}
+
+function stDiffCount() {
+  return _itemsData.filter(function(i){ return stDiffOf(i) !== 0; }).length;
+}
+
+/** stVisibleItems — รายการที่แสดงตามตัวกรอง พร้อมจัดเรียง (ค่าเริ่มต้น: จัดกลุ่มตามหมวดหมู่) */
+function stVisibleItems() {
+  var q = _stView.search.toLowerCase();
+  var list = _itemsData.filter(function(i) {
+    if (_stView.category !== 'all' && stCat(i) !== _stView.category) return false;
+    if (q && (i.name || '').toLowerCase().indexOf(q) === -1 && (i.item_code || '').toLowerCase().indexOf(q) === -1
+          && (i.barcode || '').toLowerCase().indexOf(q) === -1) return false;
+    if (_stView.onlyDiff && stDiffOf(i) === 0) return false;
+    return true;
   });
-  if (adjustments.length === 0) { showError('ไม่มีรายการที่ต้องปรับยอด'); return; }
-  showConfirm('ยืนยันปรับยอด', 'มี ' + adjustments.length + ' รายการที่ต้องปรับยอด ยืนยัน?', function() {
-    showLoading('กำลังปรับยอด...');
-    // ส่งทั้งชุดให้ backend ครั้งเดียว (adjustStock ปรับ current_stock + บันทึก Transaction ให้)
-    callAPI('adjustStock', AUTH.token, adjustments).then(function(res) {
+  var byCode = function(a, b){ return (a.item_code || '').localeCompare(b.item_code || ''); };
+  if (_stView.sort === 'name') {
+    list.sort(function(a, b){ return (a.name || '').localeCompare(b.name || '', 'th') || byCode(a, b); });
+  } else if (_stView.sort === 'code') {
+    list.sort(byCode);
+  } else {
+    list.sort(function(a, b){ return stCat(a).localeCompare(stCat(b), 'th') || byCode(a, b); });
+  }
+  return list;
+}
+
+function stDiffHTML(diff) {
+  if (diff === 0) return '<span class="st-diff text-xs font-medium text-gray-400">-</span>';
+  return '<span class="st-diff text-sm font-bold ' + (diff > 0 ? 'text-green-600' : 'text-red-600') + '">' + (diff > 0 ? '+' : '') + diff + '</span>';
+}
+
+function stRowsHTML() {
+  var list = stVisibleItems();
+  if (!list.length) return '<tr><td colspan="4" class="text-center py-10 text-gray-400">ไม่พบรายการ</td></tr>';
+  var grouped = _stView.sort === 'category';
+  var perCat  = {};
+  list.forEach(function(i){ perCat[stCat(i)] = (perCat[stCat(i)] || 0) + 1; });
+
+  var html = '';
+  var lastCat = null;
+  list.forEach(function(item) {
+    var cat = stCat(item);
+    if (grouped && cat !== lastCat) {
+      lastCat = cat;
+      html += '<tr class="bg-navy-50"><td colspan="4" class="px-4 py-2 text-xs font-bold text-navy-700">'
+        + '<i class="fi fi-rr-folder mr-1.5"></i>' + escHtml(cat)
+        + ' <span class="font-normal text-gray-500">(' + perCat[cat] + ' รายการ)</span></td></tr>';
+    }
+    var sys   = Number(item.current_stock) || 0;
+    var val   = _stCounts[item.id];
+    var moved = _stMoved[item.id];
+    html += '<tr><td class="px-4 py-3"><p class="font-medium text-gray-800">' + escHtml(item.name) + '</p>'
+      + '<p class="text-xs text-gray-500">' + escHtml(item.item_code) + ' • ' + escHtml(item.unit)
+      + (item.size ? ' • ' + escHtml(item.size) : '') + (grouped ? '' : ' • ' + escHtml(cat)) + '</p>';
+    if (moved) {
+      html += '<p class="text-xs text-amber-600 mt-0.5"><i class="fi fi-rr-triangle-warning mr-1"></i>ยอดระบบเปลี่ยนจาก ' + moved.system + ' เป็น ' + sys
+        + ' หลังบันทึกร่าง (ตอนนั้นนับได้ ' + moved.actual + ') — คงผลต่างเดิมไว้ให้ กรุณาตรวจสอบ</p>';
+    }
+    html += '</td>';
+    html += '<td class="px-4 py-3 text-center font-bold text-gray-800">' + sys + '</td>';
+    html += '<td class="px-4 py-3 text-center"><input type="number" min="0" inputmode="numeric" data-id="' + item.id + '" value="' + (val === undefined || val === null ? '' : val) + '"'
+      + ' oninput="stOnCount(this)" class="st-count w-20 border border-gray-300 rounded-lg px-2 py-1 text-center text-sm focus:outline-none focus:ring-2 focus:ring-navy-500"></td>';
+    html += '<td class="px-4 py-3 text-center">' + stDiffHTML(stDiffOf(item)) + '</td></tr>';
+  });
+  return html;
+}
+
+function stSummaryHTML() {
+  var n = stDiffCount();
+  var html = '<span class="bg-blue-50 text-blue-700 px-3 py-1.5 rounded-full font-medium"><i class="fi fi-rr-box-open-full mr-1"></i>ทั้งหมด: ' + _itemsData.length + ' รายการ</span>';
+  html += '<span class="' + (n > 0 ? 'bg-amber-50 text-amber-700' : 'bg-green-50 text-green-700') + ' px-3 py-1.5 rounded-full font-medium"><i class="fi fi-rr-clipboard-list mr-1"></i>มีผลต่าง: ' + n + ' รายการ</span>';
+  if (_stDirty) html += '<span class="bg-red-50 text-red-600 px-3 py-1.5 rounded-full font-medium"><i class="fi fi-rr-pencil mr-1"></i>มีการแก้ไขที่ยังไม่ได้บันทึกฉบับร่าง</span>';
+  return html;
+}
+
+function stRefreshSummary() {
+  var el = document.getElementById('stSummary');
+  if (el) el.innerHTML = stSummaryHTML();
+}
+
+function stRefreshTable() {
+  var el = document.getElementById('stTableBody');
+  if (el) el.innerHTML = stRowsHTML();
+}
+
+function stOnCount(inp) {
+  var id = inp.getAttribute('data-id');
+  var v  = parseInt(inp.value);
+  _stCounts[id] = isNaN(v) ? '' : v;
+  _stDirty = true;
+  var item = _itemsData.find(function(i){ return i.id === id; });
+  var cell = inp.closest('tr').querySelector('.st-diff');
+  if (item && cell) cell.outerHTML = stDiffHTML(stDiffOf(item));
+  stRefreshSummary();
+}
+
+function stSetView(key, value) {
+  _stView[key] = value;
+  stRefreshTable();
+}
+
+/** stWhoWhen — "โดยใคร, วัน/เวลา" ของฉบับร่าง */
+function stWhoWhen(d) {
+  var name = d.saved_by_name || d.created_by_name || '-';
+  var role = ROLE_LABELS[d.saved_by_role || d.created_by_role] || '';
+  return escHtml(name) + (role ? ' (' + role + ')' : '') + ' • ' + formatDateTime(d.saved_at || d.created_at);
+}
+
+function buildStocktakePage() {
+  var isAdmin = AUTH.user.role === 'admin';
+  var html = '<div class="fade-in space-y-4">';
+  html += '<div class="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">';
+  html += '<h3 class="font-semibold text-gray-700"><i class="fi fi-rr-clipboard-list text-navy-600 mr-2"></i>นับสต็อก</h3>';
+  html += '<div class="flex gap-2 flex-wrap">';
+  html += '<button onclick="submitStocktakeDraft()" class="btn-secondary flex items-center gap-2"><i class="fi fi-rr-document"></i> บันทึกฉบับร่าง</button>';
+  if (isAdmin) html += '<button onclick="openStocktakeApprove()" class="btn-primary flex items-center gap-2"><i class="fi fi-rr-disk"></i> ยืนยันปรับยอด</button>';
+  html += '</div></div>';
+
+  if (_stDraft) {
+    var isOwner = _stDraft.created_by === AUTH.user.id || _stDraft.saved_by === AUTH.user.id;
+    html += '<div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 flex flex-col sm:flex-row gap-3 sm:items-center justify-between">';
+    html += '<div class="min-w-0"><p class="font-semibold text-amber-800 text-sm"><i class="fi fi-rr-document mr-1.5"></i>ฉบับร่าง ' + escHtml(_stDraft.draft_no) + ' — รอผู้ดูแลระบบยืนยัน</p>';
+    html += '<p class="text-xs text-amber-700 mt-1">บันทึกโดย: ' + stWhoWhen(_stDraft) + ' • ผลต่าง ' + (_stDraft.diff_count || 0) + ' รายการ</p>';
+    if (_stDraft.note) html += '<p class="text-xs text-amber-700 mt-0.5">หมายเหตุ: ' + escHtml(_stDraft.note) + '</p>';
+    html += '</div><div class="flex gap-2 flex-shrink-0">';
+    html += '<button onclick="openStocktakeDetail(\'' + _stDraft.id + '\')" class="btn-secondary btn-sm text-xs"><i class="fi fi-rr-eye mr-1"></i>ดูผลต่าง</button>';
+    if (isAdmin || isOwner) html += '<button onclick="doRejectStocktake(\'' + _stDraft.id + '\')" class="btn-danger btn-sm text-xs"><i class="fi fi-rr-cross mr-1"></i>' + (isAdmin ? 'ไม่อนุมัติ' : 'ยกเลิกฉบับร่าง') + '</button>';
+    html += '</div></div>';
+  } else {
+    html += '<p class="text-xs text-gray-500">กรอกจำนวนที่นับได้จริงในช่อง "นับจริง" แล้วกด "บันทึกฉบับร่าง" — สต็อกในระบบจะถูกปรับก็ต่อเมื่อผู้ดูแลระบบกดยืนยันฉบับร่างแล้วเท่านั้น</p>';
+  }
+
+  // ตัวกรอง / การเรียง
+  var cats = {};
+  _itemsData.forEach(function(i){ cats[stCat(i)] = 1; });
+  html += '<div class="card p-3 flex flex-wrap gap-2 items-center">';
+  html += '<div class="relative"><i class="fi fi-rr-search absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm"></i>';
+  html += '<input type="text" placeholder="ค้นหาวัสดุ..." value="' + escHtml(_stView.search) + '" oninput="stSetView(\'search\', this.value)" class="pl-9 pr-4 py-2 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-navy-500 w-44"></div>';
+  html += '<select onchange="stSetView(\'category\', this.value)" class="border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-navy-500">';
+  html += '<option value="all">ทุกหมวดหมู่</option>';
+  Object.keys(cats).sort(function(a, b){ return a.localeCompare(b, 'th'); }).forEach(function(c) {
+    html += '<option value="' + escHtml(c) + '"' + (_stView.category === c ? ' selected' : '') + '>' + escHtml(c) + '</option>';
+  });
+  html += '</select>';
+  html += '<select onchange="stSetView(\'sort\', this.value)" class="border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-navy-500">';
+  [['category','เรียงตามหมวดหมู่'],['code','เรียงตามรหัสวัสดุ'],['name','เรียงตามชื่อวัสดุ']].forEach(function(o) {
+    html += '<option value="' + o[0] + '"' + (_stView.sort === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+  });
+  html += '</select>';
+  html += '<label class="flex items-center gap-1.5 text-sm text-gray-600 cursor-pointer"><input type="checkbox"' + (_stView.onlyDiff ? ' checked' : '') + ' onchange="stSetView(\'onlyDiff\', this.checked)" class="rounded"> เฉพาะที่มีผลต่าง</label>';
+  html += '<input type="text" id="stNote" maxlength="200" value="' + escHtml((_stDraft && _stDraft.note) || '') + '" oninput="_stDirty=true;stRefreshSummary()" placeholder="หมายเหตุ เช่น ตรวจนับสิ้นเดือน ต.ค. 2569" class="flex-1 min-w-[200px] border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-navy-500">';
+  html += '</div>';
+
+  html += '<div id="stSummary" class="flex gap-2 flex-wrap text-xs">' + stSummaryHTML() + '</div>';
+
+  html += '<div class="card overflow-hidden"><div class="overflow-x-auto">';
+  html += '<table class="w-full text-sm"><thead class="bg-gray-50 text-gray-600 text-xs">';
+  html += '<tr><th class="px-4 py-3 text-left">รหัส/ชื่อ</th><th class="px-4 py-3 text-center whitespace-nowrap">ระบบ</th><th class="px-4 py-3 text-center whitespace-nowrap">นับจริง</th><th class="px-4 py-3 text-center whitespace-nowrap">ผลต่าง</th></tr></thead>';
+  html += '<tbody id="stTableBody" class="divide-y divide-gray-100">' + stRowsHTML() + '</tbody></table></div></div>';
+
+  // ประวัติการตรวจนับ
+  var closed = _stDrafts.filter(function(d){ return d.status !== 'pending'; });
+  if (closed.length) {
+    html += '<div class="card overflow-hidden"><div class="card-header"><h3 class="font-semibold text-gray-700 text-sm flex items-center gap-2"><i class="fi fi-rr-time-past text-navy-600"></i> ประวัติการตรวจนับ</h3></div>';
+    html += '<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-gray-50 text-gray-600 text-xs">';
+    html += '<tr><th class="px-4 py-2 text-left">เลขที่</th><th class="px-4 py-2 text-left">ตรวจนับโดย / เวลา</th><th class="px-4 py-2 text-center whitespace-nowrap">ผลต่าง</th>';
+    html += '<th class="px-4 py-2 text-center">สถานะ</th><th class="px-4 py-2 text-left">ดำเนินการโดย / เวลา</th><th class="px-4 py-2 text-center">ดู</th></tr></thead><tbody class="divide-y divide-gray-100">';
+    closed.forEach(function(d) {
+      html += '<tr><td class="px-4 py-2 font-mono text-xs text-navy-700 whitespace-nowrap">' + escHtml(d.draft_no) + '</td>';
+      html += '<td class="px-4 py-2 text-xs text-gray-600">' + stWhoWhen(d) + '</td>';
+      html += '<td class="px-4 py-2 text-center text-xs font-bold text-gray-700">' + (d.diff_count || 0) + '</td>';
+      html += '<td class="px-4 py-2 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ' + (_statusBadgeClass[d.status] || '') + '">' + stStatusLabel(d.status) + '</span></td>';
+      html += '<td class="px-4 py-2 text-xs text-gray-600">' + escHtml(d.approved_by_name || '-') + (d.approved_at ? ' • ' + formatDateTime(d.approved_at) : '') + '</td>';
+      html += '<td class="px-4 py-2 text-center"><button title="ดูรายละเอียด" onclick="openStocktakeDetail(\'' + d.id + '\')" class="w-7 h-7 bg-gray-100 text-gray-600 rounded-lg inline-flex items-center justify-center hover:bg-gray-200"><i class="fi fi-rr-eye text-xs"></i></button></td></tr>';
+    });
+    html += '</tbody></table></div></div>';
+  }
+
+  html += '</div>';
+  document.getElementById('mainContent').innerHTML = html;
+}
+
+function stStatusLabel(status) {
+  return { pending:'ฉบับร่าง รอยืนยัน', approved:'ยืนยันปรับยอดแล้ว', rejected:'ไม่อนุมัติ/ยกเลิก' }[status] || status;
+}
+
+/** submitStocktakeDraft — บันทึกฉบับร่างการตรวจนับ (เฉพาะรายการที่นับจริงไม่ตรงกับระบบ) ยังไม่ปรับสต็อก */
+function submitStocktakeDraft() {
+  var lines = [];
+  var bad   = '';
+  _itemsData.forEach(function(item) {
+    var v = _stCounts[item.id];
+    if (v === '' || v === undefined || v === null || isNaN(v)) return;   // เว้นว่าง = ยังไม่ได้นับ
+    if (Number(v) < 0) { bad = bad || item.name; return; }
+    var sys = Number(item.current_stock) || 0;
+    if (Number(v) !== sys) lines.push({ item_id: item.id, system: sys, actual: Number(v) });
+  });
+  if (bad) { showError('จำนวนที่นับของ "' + bad + '" ต้องไม่ติดลบ'); return; }
+
+  var note = ((document.getElementById('stNote') || {}).value || '').trim();
+  var text = (lines.length
+    ? 'พบผลต่าง ' + lines.length + ' รายการ'
+    : 'ไม่พบผลต่าง (นับจริงตรงกับระบบทุกรายการ)')
+    + ' — บันทึกเป็นฉบับร่างเพื่อรอผู้ดูแลระบบยืนยัน? (สต็อกยังไม่ถูกปรับ)';
+  showConfirm(_stDraft ? 'บันทึกทับฉบับร่าง ' + _stDraft.draft_no : 'บันทึกฉบับร่าง', text, function() {
+    showLoading('กำลังบันทึกฉบับร่าง...');
+    callAPI('saveStocktakeDraft', AUTH.token, {
+      id: _stDraft ? _stDraft.id : '', note: note, total_items: _itemsData.length, lines: lines
+    }).then(function(res) {
       hideLoading();
-      if (res && res.success) {
-        showSuccess(res.message || ('ปรับยอดเรียบร้อย ' + adjustments.length + ' รายการ'));
-        _itemsData = []; _itemsCacheTime = 0; // clear cache
-        renderStocktake();
-      } else {
-        showError((res && res.message) || 'ปรับยอดไม่สำเร็จ');
-        _itemsData = []; _itemsCacheTime = 0;
-      }
+      if (res && res.success) { showSuccess(res.message); renderStocktake(); }
+      else showError(stApiError(res, 'บันทึกฉบับร่างไม่สำเร็จ'));
+    }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด ไม่สามารถบันทึกฉบับร่างได้'); });
+  }, 'บันทึกฉบับร่าง');
+}
+
+/** openStocktakeApprove — ผู้ดูแลระบบเปิดฉบับร่างเพื่อตรวจผลต่างก่อนยืนยันปรับยอด */
+function openStocktakeApprove() {
+  if (!_stDraft) { showError('ยังไม่มีฉบับร่างรอยืนยัน กรุณาตรวจนับแล้วกด "บันทึกฉบับร่าง" ก่อน'); return; }
+  if (_stDirty) { showError('มีการแก้ไขที่ยังไม่ได้บันทึก กรุณากด "บันทึกฉบับร่าง" ก่อนยืนยันปรับยอด'); return; }
+  openStocktakeDetail(_stDraft.id);
+}
+
+/** openStocktakeDetail — รายละเอียดฉบับร่าง/ประวัติการตรวจนับ: ยอดระบบ นับจริง ผลต่าง และยอดหลังปรับ */
+function openStocktakeDetail(id) {
+  var d = _stDrafts.find(function(x){ return x.id === id; });
+  if (!d) return;
+  var isAdmin   = AUTH.user.role === 'admin';
+  var isPending = d.status === 'pending';
+  var isOwner   = d.created_by === AUTH.user.id || d.saved_by === AUTH.user.id;
+  var lines = (d.lines || []).slice().sort(function(a, b) {
+    return (a.category || NO_CATEGORY).localeCompare(b.category || NO_CATEGORY, 'th') || (a.item_code || '').localeCompare(b.item_code || '');
+  });
+
+  var body = '<div class="space-y-3">';
+  body += '<div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">';
+  body += '<div class="bg-gray-50 rounded-xl p-3"><p class="text-xs text-gray-400 mb-1">ตรวจนับ/บันทึกร่างโดย</p><p class="font-semibold text-gray-700">' + stWhoWhen(d) + '</p></div>';
+  body += '<div class="bg-gray-50 rounded-xl p-3"><p class="text-xs text-gray-400 mb-1">สถานะ</p><p><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + (_statusBadgeClass[d.status] || '') + '">' + stStatusLabel(d.status) + '</span>';
+  if (!isPending) body += ' <span class="text-xs text-gray-500">โดย ' + escHtml(d.approved_by_name || '-') + ' • ' + formatDateTime(d.approved_at) + '</span>';
+  body += '</p></div></div>';
+  if (d.note) body += '<p class="text-xs text-gray-500"><b>หมายเหตุ:</b> ' + escHtml(d.note) + '</p>';
+  if (d.status === 'rejected' && d.reject_reason) body += '<p class="text-xs text-red-600"><b>เหตุผล:</b> ' + escHtml(d.reject_reason) + '</p>';
+
+  if (!lines.length) {
+    body += '<div class="bg-green-50 text-green-700 rounded-xl p-4 text-sm text-center"><i class="fi fi-rr-check-circle mr-1"></i>นับจริงตรงกับยอดในระบบทุกรายการ ไม่มีผลต่าง</div>';
+  } else {
+    body += '<div class="border border-gray-200 rounded-xl overflow-hidden"><div class="overflow-x-auto max-h-[50vh] overflow-y-auto"><table class="w-full text-sm">';
+    body += '<thead class="bg-gray-50 text-gray-600 text-xs sticky top-0"><tr><th class="px-3 py-2 text-left">รายการ</th><th class="px-3 py-2 text-center whitespace-nowrap">ระบบ (ตอนนับ)</th>';
+    body += '<th class="px-3 py-2 text-center whitespace-nowrap">นับจริง</th><th class="px-3 py-2 text-center whitespace-nowrap">ผลต่าง</th>';
+    if (d.status !== 'rejected') body += '<th class="px-3 py-2 text-center whitespace-nowrap">' + (isPending ? 'สต็อกหลังปรับ' : 'ปรับเป็น') + '</th>';
+    body += '</tr></thead><tbody class="divide-y divide-gray-100">';
+    lines.forEach(function(l) {
+      var diff  = Number(l.actual) - Number(l.system);
+      var moved = isPending && Number(l.current_stock) !== Number(l.system);
+      var after = isPending ? Math.max(0, Number(l.current_stock) + diff) : l.after;
+      body += '<tr><td class="px-3 py-2"><p class="font-medium text-gray-800">' + escHtml(l.item_name) + '</p>';
+      body += '<p class="text-xs text-gray-500">' + escHtml(l.item_code) + (l.category ? ' • ' + escHtml(l.category) : '') + '</p>';
+      if (moved) body += '<p class="text-xs text-amber-600"><i class="fi fi-rr-triangle-warning mr-1"></i>มีการรับเข้า/เบิกหลังนับ ยอดระบบปัจจุบัน ' + l.current_stock + '</p>';
+      body += '</td><td class="px-3 py-2 text-center text-gray-700">' + l.system + '</td>';
+      body += '<td class="px-3 py-2 text-center font-bold text-gray-800">' + l.actual + '</td>';
+      body += '<td class="px-3 py-2 text-center">' + stDiffHTML(diff) + '</td>';
+      if (d.status !== 'rejected') body += '<td class="px-3 py-2 text-center font-bold ' + (moved ? 'text-amber-600' : 'text-navy-700') + '">' + (after === undefined || after === null ? '-' : after) + ' <span class="text-xs font-normal text-gray-400">' + escHtml(l.unit || '') + '</span></td>';
+      body += '</tr>';
+    });
+    body += '</tbody></table></div></div>';
+  }
+  if (isPending) {
+    body += '<p class="text-xs text-gray-500"><i class="fi fi-rr-info mr-1"></i>' + (isAdmin
+      ? 'เมื่อกด "ยืนยันปรับสต็อก" ระบบจะปรับยอดตามผลต่างข้างต้นและบันทึกลงประวัติเคลื่อนไหวประเภท "ปรับยอด"'
+      : 'ฉบับร่างนี้รอผู้ดูแลระบบยืนยัน สต็อกในระบบยังไม่ถูกปรับ') + '</p>';
+  }
+  body += '</div>';
+
+  var footer = '<button onclick="closeModal()" class="btn-secondary">ปิด</button>';
+  if (isPending && isAdmin) {
+    footer += '<button onclick="doRejectStocktake(\'' + d.id + '\')" class="btn-danger"><i class="fi fi-rr-cross mr-1"></i>ไม่อนุมัติ</button>'
+      + '<button onclick="doApproveStocktake(\'' + d.id + '\')" class="btn-success"><i class="fi fi-rr-check mr-1"></i>ยืนยันปรับสต็อก</button>';
+  } else if (isPending && isOwner) {
+    footer += '<button onclick="doRejectStocktake(\'' + d.id + '\')" class="btn-danger"><i class="fi fi-rr-cross mr-1"></i>ยกเลิกฉบับร่าง</button>';
+  }
+  openModal((isPending ? 'ฉบับร่างตรวจนับ ' : 'ผลการตรวจนับ ') + d.draft_no, body, footer, 'max-w-3xl');
+}
+
+/** doApproveStocktake — ผู้ดูแลระบบยืนยันฉบับร่าง -> ปรับสต็อกจริง */
+function doApproveStocktake(id) {
+  var d = _stDrafts.find(function(x){ return x.id === id; });
+  if (!d) return;
+  showConfirm('ยืนยันปรับสต็อก', 'ระบบจะปรับสต็อก ' + (d.diff_count || 0) + ' รายการตามฉบับร่าง ' + d.draft_no + ' และไม่สามารถยกเลิกย้อนหลังได้ ยืนยัน?', function() {
+    showLoading('กำลังปรับยอด...');
+    callAPI('approveStocktake', AUTH.token, id).then(function(res) {
+      hideLoading();
+      if (res && res.success) { closeModal(); showSuccess(res.message); }
+      else showError(stApiError(res, 'ปรับยอดไม่สำเร็จ'));
+      renderStocktake();   // โหลดยอดและสถานะล่าสุดเสมอ ไม่ว่าจะสำเร็จหรือไม่
     }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด ไม่สามารถปรับยอดได้'); });
+  }, 'ยืนยันปรับสต็อก');
+}
+
+/** doRejectStocktake — ผู้ดูแลระบบไม่อนุมัติ หรือผู้บันทึกยกเลิกฉบับร่างของตนเอง (สต็อกไม่ถูกปรับ) */
+function doRejectStocktake(id) {
+  var isAdmin = AUTH.user.role === 'admin';
+  var title   = isAdmin ? 'ไม่อนุมัติฉบับร่าง' : 'ยกเลิกฉบับร่าง';
+  Swal.fire({
+    title: title, text: 'สต็อกในระบบจะไม่ถูกปรับ และต้องตรวจนับ/บันทึกฉบับร่างใหม่', icon: 'warning',
+    input: 'text', inputPlaceholder: 'เหตุผล (ถ้ามี)',
+    showCancelButton: true, confirmButtonText: title, cancelButtonText: 'กลับ',
+    reverseButtons: true, customClass: { popup: 'swal2-popup' }
+  }).then(function(r) {
+    if (!r.isConfirmed) return;
+    showLoading('กำลังบันทึก...');
+    callAPI('rejectStocktake', AUTH.token, id, r.value || '').then(function(res) {
+      hideLoading();
+      if (res && res.success) { closeModal(); showSuccess(res.message); }
+      else showError(stApiError(res, 'ดำเนินการไม่สำเร็จ'));
+      renderStocktake();
+    }).catch(function() { hideLoading(); showError('เกิดข้อผิดพลาด'); });
   });
 }
 
@@ -1897,7 +2341,7 @@ function buildWithdrawPage() {
     html += '<td class="px-4 py-2.5 text-center"><span class="px-2 py-0.5 rounded-full text-xs font-medium ' + badgeClass + '">' + statusLabel + '</span></td>';
     html += '<td class="px-4 py-2.5 text-center"><div class="flex gap-1 justify-center">';
     if (w.status === 'pending') {
-      if (AUTH.user.role === 'admin') {
+      if (canApprove()) {
         html += '<button onclick="openApproveModal(\'' + w.id + '\',' + w.quantity_requested + ')" class="btn-success btn-sm text-xs"><i class="fi fi-rr-check mr-1"></i>อนุมัติ</button>';
         html += '<button onclick="openRejectModal(\'' + w.id + '\')" class="btn-danger btn-sm text-xs"><i class="fi fi-rr-cross mr-1"></i>ปฏิเสธ</button>';
       }
@@ -1929,7 +2373,7 @@ function buildWithdrawPage() {
     html += '<span class="col-span-2"><i class="fi fi-rr-target mr-1"></i>' + escHtml(w.purpose||'-') + '</span></div>';
     if (w.status === 'pending') {
       html += '<div class="flex gap-2 pt-1">';
-      if (AUTH.user.role === 'admin') {
+      if (canApprove()) {
         html += '<button onclick="openApproveModal(\'' + w.id + '\',' + w.quantity_requested + ')" class="flex-1 btn-success btn-sm text-xs">อนุมัติ</button>';
         html += '<button onclick="openRejectModal(\'' + w.id + '\')" class="flex-1 btn-danger btn-sm text-xs">ปฏิเสธ</button>';
       }
@@ -2270,7 +2714,7 @@ var _approveData = [];
 var _approvePage = 1;
 
 function renderApprove() {
-  if (AUTH.user.role !== 'admin') { loadPage('dashboard'); return; }
+  if (!canApprove()) { loadPage('dashboard'); return; }
   showLoading('โหลดคำขอเบิก...');
   callAPI('getWithdrawals', AUTH.token, { status:'all' }).then(function(res) {
     hideLoading();
@@ -2774,18 +3218,21 @@ function loadReceiveReport() {
     html += '<h3 class="font-semibold text-gray-700 text-sm">รายงานรับวัสดุเข้าคลัง (' + data.length + ' รายการ)</h3>';
     html += '<button onclick="exportReport(\'receives\')" class="btn-success btn-sm flex items-center gap-1"><i class="fi fi-rr-file-spreadsheet"></i> Export CSV</button></div>';
     html += '<div class="overflow-x-auto"><table class="w-full text-sm"><thead class="bg-gray-50 text-xs text-gray-600">';
-    html += '<tr><th class="px-4 py-2 text-left">เลขที่</th><th class="px-4 py-2 text-left">วันที่</th><th class="px-4 py-2 text-left">รายการ</th><th class="px-4 py-2 text-center">จำนวน</th><th class="px-4 py-2 text-left">ผู้รับ</th><th class="px-4 py-2 text-left">หมายเหตุ</th></tr>';
+    html += '<tr><th class="px-4 py-2 text-left">เลขที่</th><th class="px-4 py-2 text-left">วันที่</th><th class="px-4 py-2 text-left">รายการ</th><th class="px-4 py-2 text-center">จำนวน</th><th class="px-4 py-2 text-left">ร้าน/ผู้จำหน่าย</th><th class="px-4 py-2 text-right">ราคา/หน่วย</th><th class="px-4 py-2 text-right">รวมเงิน</th><th class="px-4 py-2 text-left">ผู้รับ</th><th class="px-4 py-2 text-left">หมายเหตุ</th></tr>';
     html += '</thead><tbody class="divide-y">';
-    if (!data.length) html += '<tr><td colspan="6" class="text-center py-8 text-gray-400">ไม่มีรายการ</td></tr>';
+    if (!data.length) html += '<tr><td colspan="9" class="text-center py-8 text-gray-400">ไม่มีรายการ</td></tr>';
     data.slice(0,50).forEach(function(r) {
       html += '<tr><td class="px-4 py-2 font-mono text-xs text-navy-700">' + escHtml(r.receive_no) + '</td>';
       html += '<td class="px-4 py-2 text-xs text-gray-500">' + formatDate(r.date) + '</td>';
       html += '<td class="px-4 py-2 text-gray-700">' + escHtml(r.item_name||'-') + '</td>';
-      html += '<td class="px-4 py-2 text-center font-bold text-blue-700">+' + r.quantity + ' ' + escHtml(r.unit||'') + '</td>';
+      html += '<td class="px-4 py-2 text-center font-bold text-blue-700 whitespace-nowrap">+' + r.quantity + ' ' + escHtml(r.unit||'') + '</td>';
+      html += '<td class="px-4 py-2 text-xs text-gray-600">' + escHtml(r.supplier||'-') + '</td>';
+      html += '<td class="px-4 py-2 text-xs text-right text-gray-600 whitespace-nowrap">' + (Number(r.unit_price) ? formatMoney(r.unit_price) : '-') + '</td>';
+      html += '<td class="px-4 py-2 text-xs text-right text-gray-600 whitespace-nowrap">' + (Number(r.total_price) ? formatMoney(r.total_price) : '-') + '</td>';
       html += '<td class="px-4 py-2 text-xs text-gray-500">' + escHtml(r.received_by_name||'-') + '</td>';
       html += '<td class="px-4 py-2 text-xs text-gray-400">' + escHtml(r.note||'-') + '</td></tr>';
     });
-    if (data.length > 50) html += '<tr><td colspan="6" class="text-center py-3 text-xs text-gray-400">แสดง 50 รายการแรก Export เพื่อดูทั้งหมด</td></tr>';
+    if (data.length > 50) html += '<tr><td colspan="9" class="text-center py-3 text-xs text-gray-400">แสดง 50 รายการแรก Export เพื่อดูทั้งหมด</td></tr>';
     html += '</tbody></table></div></div>';
     document.getElementById('reportDataSection').innerHTML = html;
     document.getElementById('reportDataSection').scrollIntoView({ behavior:'smooth' });
@@ -2968,8 +3415,8 @@ function exportReport(type) {
     var data = res.data || [];
     var rows, headers;
     if (type === 'receives') {
-      headers = [{key:'receive_no',title:'เลขที่'},{key:'date',title:'วันที่'},{key:'item_name',title:'รายการ'},{key:'quantity',title:'จำนวน'},{key:'created_by_name',title:'ผู้รับ'},{key:'note',title:'หมายเหตุ'}];
-      rows = data.map(function(r){ var item=_itemsData.find(function(i){return i.id===r.item_id})||{}; return {receive_no:r.receive_no||'', date:(r.date||'').split('T')[0], item_name:item.name||r.item_id, quantity:r.quantity||0, created_by_name:r.created_by_name||'', note:r.note||''}; });
+      headers = [{key:'receive_no',title:'เลขที่'},{key:'date',title:'วันที่'},{key:'item_name',title:'รายการ'},{key:'quantity',title:'จำนวน'},{key:'unit',title:'หน่วย'},{key:'supplier',title:'ร้าน/ผู้จำหน่าย'},{key:'unit_price',title:'ราคาต่อหน่วย'},{key:'total_price',title:'รวมเงิน'},{key:'received_by_name',title:'ผู้รับ'},{key:'note',title:'หมายเหตุ'}];
+      rows = data.map(function(r){ var item=_itemsData.find(function(i){return i.id===r.item_id})||{}; return {receive_no:r.receive_no||'', date:(r.date||'').split('T')[0], item_name:r.item_name||item.name||r.item_id, quantity:r.quantity||0, unit:r.unit||'', supplier:r.supplier||'', unit_price:r.unit_price||0, total_price:r.total_price||0, received_by_name:r.received_by_name||'', note:r.note||''}; });
     } else if (type === 'withdrawals') {
       headers = [{key:'withdraw_no',title:'เลขที่'},{key:'date',title:'วันที่'},{key:'item_name',title:'รายการ'},{key:'quantity',title:'จำนวนที่ขอ'},{key:'quantity_approved',title:'จำนวนที่อนุมัติ'},{key:'unit',title:'หน่วย'},{key:'requester_name',title:'ผู้เบิก'},{key:'department',title:'แผนกที่เบิก'},{key:'status',title:'สถานะ'},{key:'purpose',title:'วัตถุประสงค์'}];
       rows = data.map(function(w){ return {withdraw_no:w.withdraw_no||'', date:(w.requested_at||'').split('T')[0], item_name:w.item_name||'', quantity:w.quantity_requested||0, quantity_approved:w.quantity_approved||0, unit:w.unit||'', requester_name:w.requested_by_name||'', department:w.department||NO_DEPT, status:w.status==='approved'?'อนุมัติ':w.status==='rejected'?'ปฏิเสธ':'รออนุมัติ', purpose:w.purpose||''}; });
@@ -3203,7 +3650,7 @@ function buildUsersPage() {
   html += '<th class="px-4 py-3 text-center">จัดการ</th></tr></thead><tbody class="divide-y divide-gray-100">';
   if (!paged.length) html += '<tr><td colspan="8" class="text-center py-10 text-gray-400">ไม่มีผู้ใช้งาน</td></tr>';
   paged.forEach(function(u) {
-    var roleColor = u.role==='admin'?'bg-navy-100 text-navy-700':u.role==='staff'?'bg-blue-100 text-blue-700':'bg-green-100 text-green-700';
+    var roleColor = ROLE_COLORS[u.role] || ROLE_COLORS.employee;
     html += '<tr>';
     html += '<td class="px-4 py-2.5"><div class="flex items-center gap-2">';
     html += '<div class="w-8 h-8 rounded-xl bg-navy-100 flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-user text-navy-600 text-sm"></i></div>';
@@ -3226,7 +3673,7 @@ function buildUsersPage() {
 
   html += '<div class="md:hidden divide-y">';
   paged.forEach(function(u) {
-    var roleColor = u.role==='admin'?'bg-navy-100 text-navy-700':u.role==='staff'?'bg-blue-100 text-blue-700':'bg-green-100 text-green-700';
+    var roleColor = ROLE_COLORS[u.role] || ROLE_COLORS.employee;
     html += '<div class="p-4 flex items-center gap-3">';
     html += '<div class="w-10 h-10 rounded-xl bg-navy-100 flex items-center justify-center flex-shrink-0"><i class="fi fi-rr-user text-navy-600"></i></div>';
     html += '<div class="flex-1 min-w-0"><p class="font-semibold text-gray-800 text-sm">' + escHtml(u.name||'-') + '</p>';
@@ -3247,7 +3694,7 @@ function buildUsersPage() {
 
 function userFormHTML(user) {
   user = user || {};
-  var roleOpts = ['admin','staff','employee'].map(function(r){ return '<option value="' + r + '"' + (user.role===r?' selected':'') + '>' + (ROLE_LABELS[r]||r) + '</option>'; }).join('');
+  var roleOpts = ['admin','accountant','staff','employee'].map(function(r){ return '<option value="' + r + '"' + (user.role===r?' selected':'') + '>' + (ROLE_LABELS[r]||r) + '</option>'; }).join('');
   return '<div class="grid grid-cols-1 sm:grid-cols-2 gap-4">'
     + fieldHTML('ชื่อ-นามสกุล *', 'uName', 'text', user.name||'', 'sm:col-span-2')
     + fieldHTML('Username *', 'uUsername', 'text', user.username||'')
@@ -3666,32 +4113,34 @@ function renderManual() {
     '<p class="mb-3">ระบบวัสดุสิ้นเปลือง ใช้บริหารจัดการคลังวัสดุตั้งแต่การรับเข้า เบิกจ่าย นับสต็อก ไปจนถึงการอนุมัติและออกรายงาน รองรับการใช้งานผ่านมือถือและคอมพิวเตอร์</p>'
     + '<div class="grid grid-cols-1 sm:grid-cols-3 gap-3">'
     + manualFeatureCard('fi-rr-box-alt', 'บริหารคลังวัสดุ', 'รับเข้า นับสต็อก พิมพ์ QR ติดฉลาก')
-    + manualFeatureCard('fi-rr-inbox-out', 'เบิก-อนุมัติ', 'พนักงานยื่นคำขอ เจ้าหน้าที่/ผู้ดูแลอนุมัติ')
+    + manualFeatureCard('fi-rr-inbox-out', 'เบิก-อนุมัติ', 'พนักงานยื่นคำขอ เจ้าหน้าที่บัญชี/ผู้ดูแลอนุมัติ')
     + manualFeatureCard('fi-rr-chart-histogram', 'ติดตาม & รายงาน', 'ดูภาพรวม แจ้งเตือนสต็อกต่ำ ออกรายงาน')
     + '</div>'
     + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>ทุกหน้าจอเข้าถึงได้จากเมนูด้านซ้าย และมีช่อง <strong>ค้นหาวัสดุเร็ว</strong> ที่แถบด้านบนของทุกหน้า</div>');
 
   // 2. การเข้าสู่ระบบ
   html += manualSection('m-login', 'fi-rr-sign-in', '2. การเข้าสู่ระบบ',
-    manualStep(1, 'เลือกประเภทผู้ใช้', 'เลือกแท็บ ผู้ดูแลระบบ / เจ้าหน้าที่ / พนักงาน ให้ตรงกับบัญชีของท่าน')
+    manualStep(1, 'เลือกประเภทผู้ใช้', 'เลือกแท็บ ผู้ดูแลระบบ / เจ้าหน้าที่ / พนักงาน ให้ตรงกับบัญชีของท่าน (เจ้าหน้าที่คลังและเจ้าหน้าที่บัญชีใช้แท็บ "เจ้าหน้าที่" เหมือนกัน)')
     + manualStep(2, 'กรอกชื่อผู้ใช้และรหัสผ่าน', 'กรอกข้อมูลแล้วกด "เข้าสู่ระบบ" หรือกด Enter ที่ช่องรหัสผ่าน')
     + manualStep(3, 'ลืมรหัสผ่าน', 'กด "ลืมรหัสผ่าน?" ใต้ปุ่มเข้าสู่ระบบ แล้วกรอกอีเมลที่ลงทะเบียนไว้เพื่อรับรหัสผ่านชั่วคราว')
     + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>หลังเข้าสู่ระบบสามารถกดชื่อ/ไอคอนโปรไฟล์มุมขวาบน หรือด้านล่างเมนู เพื่อ<strong>ออกจากระบบ</strong>ได้ทุกเมื่อ</div>');
 
   // 3. บทบาทผู้ใช้
   html += manualSection('m-roles', 'fi-rr-users', '3. บทบาทผู้ใช้',
-    '<p class="text-sm text-gray-500 mb-3">ระบบมี 3 บทบาท แต่ละบทบาทเห็นเมนูและทำได้ต่างกัน</p>'
+    '<p class="text-sm text-gray-500 mb-3">ระบบมี 4 บทบาท แต่ละบทบาทเห็นเมนูและทำได้ต่างกัน</p>'
     + '<div class="overflow-x-auto"><table class="w-full text-sm border border-gray-200 rounded-xl overflow-hidden">'
     + '<thead class="bg-navy-700 text-white text-xs"><tr><th class="px-3 py-2 text-left">บทบาท</th><th class="px-3 py-2 text-left">เมนูที่เห็น</th><th class="px-3 py-2 text-left">สิทธิ์เด่น</th></tr></thead>'
     + '<tbody class="divide-y divide-gray-100">'
     + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-navy-100 text-navy-700">ผู้ดูแลระบบ</span></td>'
-    + '<td class="px-3 py-2">ทุกเมนู</td><td class="px-3 py-2">จัดการรายการวัสดุ, อนุมัติ/ปฏิเสธการเบิก, จัดการผู้ใช้งาน, ตั้งค่าระบบ</td></tr>'
-    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">เจ้าหน้าที่</span></td>'
-    + '<td class="px-3 py-2">คลังวัสดุ (ยกเว้นรายการวัสดุ), การเบิก, รายงาน</td><td class="px-3 py-2">รับวัสดุเข้าคลัง, นับสต็อก, พิมพ์ QR, ยื่นคำขอเบิก, ดูรายงาน</td></tr>'
+    + '<td class="px-3 py-2">ทุกเมนู</td><td class="px-3 py-2">จัดการรายการวัสดุ, <strong>ยืนยันฉบับร่างตรวจนับเพื่อปรับสต็อก</strong>, อนุมัติ/ปฏิเสธการเบิก, จัดการผู้ใช้งาน, ตั้งค่าระบบ</td></tr>'
+    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">เจ้าหน้าที่บัญชี</span></td>'
+    + '<td class="px-3 py-2">คลังวัสดุ (ยกเว้นรายการวัสดุ), การเบิก, อนุมัติการเบิก, รายงาน</td><td class="px-3 py-2">อนุมัติ/ปฏิเสธการเบิก, ตรวจนับสต็อกสิ้นเดือนและบันทึกฉบับร่าง, ดูรายงาน</td></tr>'
+    + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">เจ้าหน้าที่คลัง</span></td>'
+    + '<td class="px-3 py-2">คลังวัสดุ (ยกเว้นรายการวัสดุและนับสต็อก), การเบิก, รายงาน</td><td class="px-3 py-2">รับวัสดุเข้าคลัง, พิมพ์ QR, ยื่นคำขอเบิก, ดูรายงาน</td></tr>'
     + '<tr><td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700">พนักงาน</span></td>'
     + '<td class="px-3 py-2">ภาพรวมระบบ, สต็อกคงเหลือ, เบิกวัสดุ, ประวัติเคลื่อนไหว</td><td class="px-3 py-2">ดูสต็อก, ยื่นคำขอเบิกวัสดุ, ดูประวัติของตนเอง</td></tr>'
     + '</tbody></table></div>'
-    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>เฉพาะ <strong>ผู้ดูแลระบบ</strong> เท่านั้นที่อนุมัติ/ปฏิเสธคำขอเบิกและจัดการผู้ใช้งาน/ตั้งค่าระบบได้</div>');
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>ขั้นตอนการทำงาน: <strong>เจ้าหน้าที่คลัง</strong> รับเข้า-เบิก → <strong>เจ้าหน้าที่บัญชี</strong> อนุมัติการเบิก และตรวจนับจริงสิ้นเดือนพร้อมบันทึกฉบับร่าง → <strong>ผู้ดูแลระบบ</strong> ยืนยันฉบับร่าง จึงจะปรับสต็อกให้ตรงจริง</div>');
 
   // 4. สต็อก & รายการวัสดุ
   html += manualSection('m-stock', 'fi-rr-layers', '4. สต็อกคงเหลือ & รายการวัสดุ',
@@ -3703,7 +4152,8 @@ function renderManual() {
     + '</div>'
     + '<p class="text-sm text-gray-500 mb-1">เมื่อมีวัสดุใกล้หมด ระบบจะแสดง<strong>ตัวเลขแจ้งเตือนสีเหลือง</strong>กำกับที่เมนู "สต็อกคงเหลือ" ในแถบด้านซ้ายโดยอัตโนมัติ</p>'
     + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">รายการวัสดุ <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
-    + '<p class="text-sm text-gray-500 mb-3">เมนู <strong>รายการวัสดุ</strong> ใช้เพิ่ม/แก้ไข/ปิดใช้งานวัสดุ กำหนดรหัสวัสดุ ชื่อ หน่วยนับ หมวดหมู่ รูปภาพ และจุดสั่งซื้อ (จุดที่ถือว่าใกล้หมด)</p>'
+    + '<p class="text-sm text-gray-500 mb-3">เมนู <strong>รายการวัสดุ</strong> ใช้เพิ่ม/แก้ไข/ปิดใช้งานวัสดุ กำหนดรหัสวัสดุ ชื่อ หน่วยนับ หมวดหมู่ รูปภาพ และจุดสั่งซื้อ (จุดที่ถือว่าใกล้หมด) — ช่อง <strong>หมวดหมู่</strong> เป็นรายการให้เลือก หากยังไม่มีหมวดหมู่ที่ต้องการให้เลือก "+ เพิ่มหมวดหมู่ใหม่..." แล้วพิมพ์ชื่อ</p>'
+    + '<p class="text-sm text-gray-500 mb-3">กดปุ่ม <i class="fi fi-rr-eye"></i> ดูรายละเอียดวัสดุ แล้วกด <strong>ประวัติการรับเข้า</strong> เพื่อดูวันที่รับเข้า จำนวน ชื่อร้าน และราคาของแต่ละครั้ง</p>'
     + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">เพิ่มวัสดุครั้งละหลายรายการ</h4>'
     + manualStep(1, 'กดปุ่ม "เพิ่มหลายรายการ"', 'อยู่ข้างปุ่ม "เพิ่มวัสดุใหม่" ในหน้ารายการวัสดุ')
     + manualStep(2, 'กรอกข้อมูลในตาราง', 'เริ่มต้นให้ 5 แถว กด "เพิ่มแถว" หรือ "เพิ่ม 5 แถว" ได้ตามต้องการ • ตั้ง "หมวดหมู่เริ่มต้น" และ "หน่วยเริ่มต้น" ไว้ก่อน แถวใหม่จะกรอกให้อัตโนมัติ')
@@ -3714,16 +4164,18 @@ function renderManual() {
   html += manualSection('m-receive', 'fi-rr-inbox-in', '5. รับวัสดุเข้าคลัง',
     '<p class="text-sm text-gray-500 mb-2">ใช้เมื่อมีวัสดุใหม่ส่งเข้าคลัง (เจ้าหน้าที่ขึ้นไป)</p>'
     + manualStep(1, 'เปิดเมนู "รับวัสดุเข้าคลัง"', 'เลือกวัสดุจากรายการที่มีอยู่')
-    + manualStep(2, 'กรอกจำนวนที่รับเข้า', 'ระบุจำนวนและรายละเอียดที่เกี่ยวข้อง (เช่น ผู้ส่ง/เลขที่เอกสาร ถ้ามี)')
+    + manualStep(2, 'กรอกจำนวนที่รับเข้า', 'ระบุจำนวน วันที่รับเข้า <strong>ชื่อร้าน/ผู้จำหน่าย</strong> และ <strong>ราคาต่อหน่วย</strong> (ระบบเก็บเป็นประวัติการรับเข้าของวัสดุชิ้นนั้น)')
     + manualStep(3, 'บันทึก', 'ระบบจะบวกยอดเข้าสต็อกทันที และบันทึกลงประวัติเคลื่อนไหวประเภท "รับเข้า"'));
 
   // 6. นับสต็อก
   html += manualSection('m-stocktake', 'fi-rr-clipboard-list', '6. นับสต็อก',
-    '<p class="text-sm text-gray-500 mb-2">ใช้ตรวจนับวัสดุจริงเทียบกับยอดในระบบ (สต็อกจริง)</p>'
-    + manualStep(1, 'เปิดเมนู "นับสต็อก"', 'จะเห็นตารางวัสดุทั้งหมดพร้อมยอด "ระบบ" ปัจจุบัน')
+    '<p class="text-sm text-gray-500 mb-2">ใช้ตรวจนับวัสดุจริงเทียบกับยอดในระบบ <span class="text-xs text-gray-400">(เจ้าหน้าที่บัญชี / ผู้ดูแลระบบ)</span> — การปรับสต็อกต้องผ่าน 2 ขั้น: บันทึกฉบับร่าง แล้วให้ผู้ดูแลระบบยืนยัน</p>'
+    + manualStep(1, 'เปิดเมนู "นับสต็อก"', 'ตารางวัสดุจัดกลุ่มตาม<strong>หมวดหมู่</strong> พร้อมยอด "ระบบ" ปัจจุบัน — เลือกดูเฉพาะหมวดหมู่ ค้นหา หรือเปลี่ยนเป็นเรียงตามรหัส/ชื่อได้ที่แถบด้านบนตาราง')
     + manualStep(2, 'กรอกจำนวนที่นับได้จริง', 'ในช่อง "นับจริง" ของแต่ละแถว ระบบจะคำนวณ "ผลต่าง" ให้ทันที (สีเขียว = เกิน, สีแดง = ขาด)')
-    + manualStep(3, 'กด "บันทึกการปรับยอด"', 'ระบบจะปรับยอดสต็อกเฉพาะรายการที่มีผลต่างเท่านั้น')
-    + '<div class="warn-box mt-3 text-sm"><i class="fi fi-rr-triangle-warning text-amber-600 mr-1"></i>การปรับยอดจากหน้านี้จะเขียนทับยอดสต็อกปัจจุบันทันที ควรตรวจนับให้ถูกต้องก่อนบันทึก</div>');
+    + manualStep(3, 'กด "บันทึกฉบับร่าง"', 'ระบบบันทึกรายการที่มีผลต่างพร้อม<strong>ชื่อผู้บันทึกและวัน/เวลา</strong> โดย<strong>ยังไม่ปรับสต็อก</strong> — กลับมาแก้ไขแล้วบันทึกทับฉบับร่างเดิมได้จนกว่าจะถูกยืนยัน')
+    + manualStep(4, 'ผู้ดูแลระบบกด "ยืนยันปรับยอด"', 'ตรวจผลต่างของฉบับร่าง แล้วกด "ยืนยันปรับสต็อก" ระบบจึงปรับยอดและบันทึกลงประวัติเคลื่อนไหวประเภท "ปรับยอด" — หรือกด "ไม่อนุมัติ" เพื่อให้ตรวจนับใหม่ (สต็อกไม่ถูกปรับ)')
+    + '<div class="tip-box mt-3 text-sm"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>เมื่อมีฉบับร่างรอยืนยัน จะมี<strong>ตัวเลขสีเหลือง</strong>กำกับที่เมนู "นับสต็อก" และดูผลการตรวจนับย้อนหลังได้ที่ "ประวัติการตรวจนับ" ด้านล่างของหน้า</div>'
+    + '<div class="warn-box mt-3 text-sm"><i class="fi fi-rr-triangle-warning text-amber-600 mr-1"></i>หากมีการรับเข้า/เบิกวัสดุหลังวันที่นับ ระบบจะปรับด้วย "ผลต่าง" ที่นับได้ (ไม่เขียนทับความเคลื่อนไหวที่เกิดภายหลัง) และแสดงคำเตือนสีเหลืองที่รายการนั้นให้ตรวจสอบก่อนยืนยัน</div>');
 
   // 7. พิมพ์ QR สติ๊กเกอร์
   html += manualSection('m-printqr', 'fi-rr-print', '7. พิมพ์ QR สติ๊กเกอร์',
@@ -3740,7 +4192,7 @@ function renderManual() {
     + manualStep(2, 'เลือกวัสดุได้หลายรายการในคำขอเดียว', 'กดที่ชื่อวัสดุเพื่อเพิ่มลงรายการด้านล่าง (กดซ้ำ = เพิ่มจำนวน) แก้จำนวนในช่องข้างรายการ หรือกดถังขยะเพื่อเอาออก • ระบบจะแสดง <strong>แผนกที่เบิก</strong> อัตโนมัติจากบัญชีผู้ใช้')
     + manualStep(3, 'ระบุวัตถุประสงค์แล้วกด "ยื่นคำขอเบิก"', 'วัตถุประสงค์/หมายเหตุใช้ร่วมกันทั้งคำขอ • ระบบจะออกเลขที่เบิกแยกรายบรรทัด แต่ผูกด้วย "เลขชุด" เดียวกัน ฝั่งอนุมัติจะเห็นเป็นการ์ดเดียวและกดอนุมัติ/ปฏิเสธได้ทีเดียวทั้งชุด และแจ้งเตือนออกไปเพียงข้อความเดียวต่อ 1 ชุด')
     + manualStep(4, 'ติดตามสถานะ', 'ดูสถานะได้ที่แท็บ ทั้งหมด/รออนุมัติ/อนุมัติแล้ว/ปฏิเสธ ในหน้าเดียวกัน — คำขอที่ยังรออนุมัติและเป็นของตนเองสามารถกด "ยกเลิก" ได้')
-    + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">8.2 อนุมัติการเบิก <span class="text-xs text-gray-400 font-normal">(เฉพาะผู้ดูแลระบบ)</span></h4>'
+    + '<h4 class="font-semibold text-gray-700 text-sm mt-4 mb-2">8.2 อนุมัติการเบิก <span class="text-xs text-gray-400 font-normal">(เจ้าหน้าที่บัญชี / ผู้ดูแลระบบ)</span></h4>'
     + '<p class="text-sm text-gray-500 mb-2">เมนู <strong>อนุมัติการเบิก</strong> จะมีตัวเลขสีแดงกำกับจำนวนคำขอที่รออนุมัติ</p>'
     + manualStep(1, 'เปิดคำขอที่สถานะ "รออนุมัติ"', 'ตรวจสอบจำนวนที่ขอและวัตถุประสงค์ — คำขอที่เบิกหลายรายการพร้อมกัน (มีป้าย "ชุด #WB-...") จะรวมแสดงเป็นการ์ดเดียว ไม่แยกทีละรายการ')
     + manualStep(2, 'กด "อนุมัติทั้งชุด"', 'ปรับจำนวนที่อนุมัติจริงของแต่ละรายการในชุดได้ (อาจน้อยกว่าที่ขอได้) แล้วกดยืนยันครั้งเดียว ระบบจะตัดสต็อกทุกรายการพร้อมกันทันที')
@@ -3749,10 +4201,11 @@ function renderManual() {
 
   // 9. ประวัติเคลื่อนไหว
   html += manualSection('m-transactions', 'fi-rr-time-past', '9. ประวัติเคลื่อนไหว',
-    '<p class="text-sm text-gray-500 mb-2">เมนู <strong>ประวัติเคลื่อนไหว</strong> รวมทุกความเคลื่อนไหวของสต็อกไว้ในที่เดียว แบ่งเป็น 2 ประเภทหลัก:</p>'
+    '<p class="text-sm text-gray-500 mb-2">เมนู <strong>ประวัติเคลื่อนไหว</strong> รวมทุกความเคลื่อนไหวของสต็อกไว้ในที่เดียว แบ่งเป็น 3 ประเภท:</p>'
     + '<div class="flex flex-wrap gap-2">'
     + '<span class="px-3 py-1 rounded-full text-xs font-medium badge-receive">รับเข้า</span>'
     + '<span class="px-3 py-1 rounded-full text-xs font-medium badge-withdraw">เบิกออก</span>'
+    + '<span class="px-3 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">ปรับยอด (จากการตรวจนับ)</span>'
     + '</div>'
     + '<p class="text-sm text-gray-500 mt-2">ใช้สำหรับตรวจสอบย้อนหลังว่าใครรับ/เบิกวัสดุใด จำนวนเท่าไร และเมื่อใด</p>');
 
@@ -3767,7 +4220,7 @@ function renderManual() {
   html += manualSection('m-admin', 'fi-rr-settings', '11. ผู้ใช้งาน & ตั้งค่าระบบ',
     '<p class="text-xs text-gray-400 mb-3">เมนูในกลุ่มนี้แสดงเฉพาะบทบาท "ผู้ดูแลระบบ"</p>'
     + '<h4 class="font-semibold text-gray-700 text-sm mb-2">11.1 ผู้ใช้งาน</h4>'
-    + '<p class="text-sm text-gray-500 mb-2">เพิ่ม/แก้ไขบัญชีผู้ใช้ กำหนดชื่อผู้ใช้ รหัสผ่านเริ่มต้น บทบาท (ผู้ดูแลระบบ / เจ้าหน้าที่ / พนักงาน) และ <strong>แผนก/ฝ่าย</strong></p>'
+    + '<p class="text-sm text-gray-500 mb-2">เพิ่ม/แก้ไขบัญชีผู้ใช้ กำหนดชื่อผู้ใช้ รหัสผ่านเริ่มต้น บทบาท (ผู้ดูแลระบบ / เจ้าหน้าที่บัญชี / เจ้าหน้าที่คลัง / พนักงาน) และ <strong>แผนก/ฝ่าย</strong></p>'
     + '<div class="tip-box text-sm mb-3"><i class="fi fi-rr-bulb text-navy-700 mr-1"></i>แผนกที่กำหนดให้ผู้ใช้จะถูกบันทึกกับคำขอเบิกทุกใบของคนนั้นโดยอัตโนมัติ และนำไปสรุปในรายงานรายเดือน — ผู้ใช้ที่ยังไม่ได้กำหนดแผนกจะต้องเลือกแผนกเองตอนยื่นคำขอ</div>'
     + '<h4 class="font-semibold text-gray-700 text-sm mb-2">11.2 ตั้งค่าระบบ</h4>'
     + '<p class="text-sm text-gray-500 mb-2">ปรับชื่อระบบ โลโก้ และค่าตั้งต้นอื่น ๆ ของระบบ รวมถึง:</p>'
@@ -3789,9 +4242,10 @@ function renderManual() {
   // 13. FAQ
   html += manualSection('m-faq', 'fi-rr-interrogation', '13. คำถามที่พบบ่อย',
     manualFaq('ลืมรหัสผ่านต้องทำอย่างไร?', 'กด "ลืมรหัสผ่าน?" ที่หน้าเข้าสู่ระบบ แล้วกรอกอีเมลที่ลงทะเบียนไว้เพื่อรับรหัสผ่านชั่วคราว')
-    + manualFaq('เบิกวัสดุแล้วสถานะ "รออนุมัติ" ค้างนานทำอย่างไร?', 'ติดต่อผู้ดูแลระบบให้ตรวจสอบที่เมนู "อนุมัติการเบิก" หรือหากคำขอเป็นของตนเองและยังรออนุมัติ สามารถกด "ยกเลิก" แล้วยื่นใหม่ได้')
+    + manualFaq('เบิกวัสดุแล้วสถานะ "รออนุมัติ" ค้างนานทำอย่างไร?', 'ติดต่อเจ้าหน้าที่บัญชีหรือผู้ดูแลระบบให้ตรวจสอบที่เมนู "อนุมัติการเบิก" หรือหากคำขอเป็นของตนเองและยังรออนุมัติ สามารถกด "ยกเลิก" แล้วยื่นใหม่ได้')
     + manualFaq('ทำไมไม่เห็นเมนู "รายการวัสดุ" หรือ "จัดการระบบ"?', 'เมนูเหล่านี้จำกัดสิทธิ์เฉพาะบทบาท "ผู้ดูแลระบบ" เท่านั้น หากจำเป็นต้องใช้งานให้ติดต่อผู้ดูแลระบบเพื่อขอสิทธิ์')
-    + manualFaq('ตัวเลขสีแดง/เหลืองที่เมนูคืออะไร?', 'สีแดงที่เมนู "อนุมัติการเบิก" คือจำนวนคำขอที่รออนุมัติ ส่วนสีเหลืองที่เมนู "สต็อกคงเหลือ" คือจำนวนวัสดุที่ใกล้หมด/หมดสต็อก')
+    + manualFaq('ตัวเลขสีแดง/เหลืองที่เมนูคืออะไร?', 'สีแดงที่เมนู "อนุมัติการเบิก" คือจำนวนคำขอที่รออนุมัติ สีเหลืองที่เมนู "สต็อกคงเหลือ" คือจำนวนวัสดุที่ใกล้หมด/หมดสต็อก และสีเหลืองที่เมนู "นับสต็อก" คือฉบับร่างตรวจนับที่รอผู้ดูแลระบบยืนยัน')
+    + manualFaq('บันทึกฉบับร่างนับสต็อกแล้ว ทำไมยอดในระบบยังไม่เปลี่ยน?', 'ฉบับร่างเป็นเพียงบันทึกผลการตรวจนับ สต็อกจะถูกปรับก็ต่อเมื่อผู้ดูแลระบบเปิดเมนู "นับสต็อก" แล้วกด "ยืนยันปรับยอด" เท่านั้น')
     + manualFaq('พิมพ์ QR แล้วใช้งานอย่างไร?', 'นำสติ๊กเกอร์ไปติดที่ตัววัสดุหรือชั้นวาง เมื่อต้องการเบิกให้ใช้กล้องสแกน QR ในหน้าเบิกวัสดุ ระบบจะเลือกวัสดุนั้นให้อัตโนมัติ'));
 
   html += '</div></div>';

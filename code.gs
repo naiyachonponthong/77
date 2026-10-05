@@ -21,6 +21,7 @@ const CONFIG = {
   USER_ROLES: {
     'admin':    { name: 'ผู้ดูแลระบบ',    permissions: ['all'] },
     'staff':    { name: 'เจ้าหน้าที่คลัง', permissions: ['view','receive','withdraw','report'] },
+    'accountant': { name: 'เจ้าหน้าที่บัญชี', permissions: ['view','receive','withdraw','report','approve','stocktake'] },
     'employee': { name: 'พนักงาน',        permissions: ['view_own','withdraw'] }
   }
 };
@@ -89,6 +90,10 @@ function doGet(e) {
         case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
         case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
         case 'adjustStock':         result = adjustStock(args[0], args[1]); break;
+        case 'getStocktakes':       result = getStocktakes(args[0]); break;
+        case 'saveStocktakeDraft':  result = saveStocktakeDraft(args[0], args[1]); break;
+        case 'approveStocktake':    result = approveStocktake(args[0], args[1]); break;
+        case 'rejectStocktake':     result = rejectStocktake(args[0], args[1], args[2]); break;
         case 'repairItems':         result = repairItems(args[0], args[1]); break;
         case 'addReceive':          result = addReceive(args[0], args[1]); break;
         case 'getReceives':         result = getReceives(args[0], args[1]); break;
@@ -156,9 +161,10 @@ function include(filename) {
  */
 function ensureSheetsReady() {
   var cache = CacheService.getScriptCache();
-  if (cache.get('sheets_ready_v1')) return;
+  // เปลี่ยนเลขเวอร์ชันของ key ทุกครั้งที่เพิ่มชีตใหม่ เพื่อให้ระบบที่ deploy ไว้แล้วสร้างชีตที่ขาดทันที
+  if (cache.get('sheets_ready_v2')) return;
   initializeSheets();
-  cache.put('sheets_ready_v1', '1', 21600);
+  cache.put('sheets_ready_v2', '1', 21600);
 }
 
 /**
@@ -187,6 +193,7 @@ function doPost(e) {
       case 'uploadFile':    result = uploadFile(args[0], args[1], args[2], args[3]); break;
       case 'addItemsBulk': result = addItemsBulk(args[0], args[1]); break;
       case 'adjustStock':  result = adjustStock(args[0], args[1]); break;
+      case 'saveStocktakeDraft': result = saveStocktakeDraft(args[0], args[1]); break;
       case 'addWithdrawalBulk': result = addWithdrawalBulk(args[0], args[1]); break;
       default: result = { success: false, message: 'Use GET for ' + fn };
     }
@@ -225,6 +232,7 @@ function initializeSheets() {
     'Receives':     'receive_json',
     'Withdrawals':  'withdrawal_json',
     'Transactions': 'transaction_json',
+    'Stocktakes':   'stocktake_json',
     'Errors':       'error_json'
   };
 
@@ -319,7 +327,9 @@ function login(username, password, role) {
     }
     if (!user) return { success: false, message: 'ไม่พบชื่อผู้ใช้งานในระบบ' };
     if (!verifyPassword(password, user.password)) return { success: false, message: 'รหัสผ่านไม่ถูกต้อง' };
-    if (role && user.role !== role) return { success: false, message: 'บทบาทไม่ถูกต้อง กรุณาเลือกแท็บให้ตรง' };
+    // แท็บ "เจ้าหน้าที่" ใช้ร่วมกันทั้งเจ้าหน้าที่คลัง (staff) และเจ้าหน้าที่บัญชี (accountant)
+    var roleMatches = user.role === role || (role === 'staff' && user.role === 'accountant');
+    if (role && !roleMatches) return { success: false, message: 'บทบาทไม่ถูกต้อง กรุณาเลือกแท็บให้ตรง' };
 
     var token = Utilities.getUuid();
     var now = new Date();
@@ -673,14 +683,15 @@ function repairItems(token, dryRun) {
   }
 }
 
-/** adjustStock — ปรับยอดสต็อกจากการนับสต็อก (staff/admin)
+/** adjustStock — ปรับยอดสต็อกทันทีโดยไม่ผ่านฉบับร่าง (Admin เท่านั้น)
  *  รับ adjustments = [{ item_id, actual }] ปรับ current_stock พร้อมบันทึก Transaction ทุกรายการ
  *  หมายเหตุ: ห้ามใช้ updateItem ปรับสต็อก เพราะ updateItem ไม่แตะ current_stock และไม่มี log
+ *  ขั้นตอนปกติของหน้า "นับสต็อก" คือ saveStocktakeDraft -> approveStocktake (ดูหัวข้อ STOCKTAKE ด้านล่าง)
  */
 function adjustStock(token, adjustments) {
   try {
     var session = validateSession(token);
-    if (!session || session.role === 'employee') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
     if (!adjustments || !adjustments.length) return { success: false, message: 'ไม่มีรายการที่ต้องปรับยอด' };
 
     var lock = LockService.getScriptLock();
@@ -772,6 +783,283 @@ function deleteItem(token, itemId) {
 }
 
 // ============================================================
+// STOCKTAKE (ตรวจนับสต็อก — ฉบับร่าง -> ผู้ดูแลระบบยืนยัน -> ปรับยอด)
+// ============================================================
+
+var STOCKTAKE_MAX_LINES = 400;   // 1 ฉบับร่าง = 1 เซลล์ในชีต (จำกัด 50,000 ตัวอักษร)
+
+/** canStocktake — ผู้ที่ตรวจนับและบันทึกฉบับร่างได้: เจ้าหน้าที่บัญชี และผู้ดูแลระบบ */
+function canStocktake(session) {
+  return !!session && (session.role === 'admin' || session.role === 'accountant');
+}
+
+/** findPendingStocktake — ฉบับร่างที่ยังรอยืนยัน (ระบบให้มีได้ครั้งละ 1 ฉบับ กันปรับยอดซ้ำซ้อน) */
+function findPendingStocktake() {
+  var all = getSheetData('Stocktakes');
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].status === 'pending') return all[i];
+  }
+  return null;
+}
+
+/** getStocktakes — ฉบับร่างที่รอยืนยัน + ประวัติการตรวจนับล่าสุด (เจ้าหน้าที่บัญชี / ผู้ดูแลระบบ)
+ *  แต่ละบรรทัดเก็บแค่ { item_id, system, actual } จึงเติมชื่อ/หน่วย/ยอดปัจจุบันจากชีต Items ให้ตอนอ่าน
+ */
+function getStocktakes(token) {
+  try {
+    var session = validateSession(token);
+    if (!canStocktake(session)) return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+
+    var itemById = {};
+    getSheetData('Items').forEach(function(i){ itemById[i.id] = i; });
+
+    var all = getSheetData('Stocktakes');
+    all.sort(function(a, b){ return (b.saved_at || b.created_at || '') > (a.saved_at || a.created_at || '') ? 1 : -1; });
+    var pending = all.filter(function(s){ return s.status === 'pending'; });
+    var closed  = all.filter(function(s){ return s.status !== 'pending'; }).slice(0, 20);
+
+    var data = pending.concat(closed).map(function(s) {
+      s.lines = (s.lines || []).map(function(l) {
+        var item = itemById[l.item_id] || {};
+        return {
+          item_id: l.item_id,
+          item_code: item.item_code || '',
+          item_name: item.name || '(ไม่พบรายการวัสดุ)',
+          unit: item.unit || '',
+          category: item.category || '',
+          system: l.system,
+          actual: l.actual,
+          diff: l.actual - l.system,
+          before: l.before,
+          after: l.after,
+          current_stock: parseInt(item.current_stock) || 0
+        };
+      });
+      return s;
+    });
+    return { success: true, data: data };
+  } catch(err) {
+    logError('getStocktakes', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** saveStocktakeDraft — บันทึกฉบับร่างการตรวจนับ (ยังไม่ปรับสต็อก)
+ *  payload = { id, note, total_items, lines: [{ item_id, system, actual }] }
+ *  lines ส่งมาเฉพาะรายการที่นับจริงไม่ตรงกับยอดในระบบ — system คือยอดที่ผู้นับเห็นบนจอตอนนับ
+ *  บันทึกว่าใครนับ/เมื่อไร แล้วรอผู้ดูแลระบบกดยืนยัน (approveStocktake) จึงจะปรับสต็อกจริง
+ */
+function saveStocktakeDraft(token, payload) {
+  try {
+    var session = validateSession(token);
+    if (!canStocktake(session)) return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+    payload = payload || {};
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(15000);
+    try {
+      var itemById = {};
+      getSheetData('Items').forEach(function(i){ itemById[i.id] = i; });
+
+      var lines  = [];
+      var errors = [];
+      var seen   = {};
+      (payload.lines || []).forEach(function(l) {
+        var item = itemById[l.item_id];
+        if (!item || seen[l.item_id]) return;
+        var actual = parseInt(l.actual);
+        var system = parseInt(l.system);
+        if (isNaN(system)) system = parseInt(item.current_stock) || 0;
+        if (isNaN(actual) || actual < 0) { errors.push(item.name + ': จำนวนที่นับไม่ถูกต้อง'); return; }
+        if (actual === system) return;
+        seen[l.item_id] = true;
+        lines.push({ item_id: item.id, system: system, actual: actual });
+      });
+      if (errors.length) return { success: false, message: errors.join(' | '), errors: errors };
+      if (lines.length > STOCKTAKE_MAX_LINES) {
+        return { success: false, message: 'มีรายการที่มีผลต่างมากเกินไป (' + lines.length + ' รายการ) กรุณาแบ่งบันทึกเป็นรอบ รอบละไม่เกิน ' + STOCKTAKE_MAX_LINES + ' รายการ' };
+      }
+
+      var now     = new Date().toISOString();
+      var pending = findPendingStocktake();
+      var fields  = {
+        lines: lines,
+        diff_count: lines.length,
+        total_items: parseInt(payload.total_items) || 0,
+        note: String(payload.note || '').trim(),
+        saved_by: session.user_id,
+        saved_by_name: session.name,
+        saved_by_role: session.role,
+        saved_at: now
+      };
+
+      // หน้าเว็บต้องอ้างถึงฉบับร่างฉบับเดียวกับที่ค้างอยู่จริง ไม่งั้นผลต่างที่ส่งมาคำนวณจากยอดเก่า
+      // (เช่น ฉบับร่างถูกยืนยันไปแล้วระหว่างที่เปิดหน้าค้างไว้) ซึ่งจะทำให้ปรับยอดซ้ำ
+      if (payload.id && (!pending || pending.id !== payload.id)) {
+        return { success: false, message: 'ฉบับร่างนี้ถูกดำเนินการไปแล้ว กรุณาโหลดหน้านับสต็อกใหม่แล้วตรวจสอบอีกครั้ง' };
+      }
+      if (!payload.id && pending) {
+        return { success: false, message: 'มีฉบับร่าง ' + pending.draft_no + ' รอยืนยันอยู่แล้ว กรุณาโหลดหน้านับสต็อกใหม่เพื่อแก้ไขฉบับเดิม' };
+      }
+
+      var draft;
+      if (pending) {
+        // บันทึกทับฉบับเดิม (ผู้บันทึกครั้งแรกยังคงอยู่ใน created_by_name)
+        draft = updateInSheet('Stocktakes', pending.id, fields);
+      } else {
+        fields.id              = Utilities.getUuid();
+        fields.draft_no        = generateRunningNumber('STK', 'Stocktakes');
+        fields.status          = 'pending';
+        fields.created_by      = session.user_id;
+        fields.created_by_name = session.name;
+        fields.created_by_role = session.role;
+        fields.created_at      = now;
+        fields.approved_by = ''; fields.approved_by_name = ''; fields.approved_at = ''; fields.reject_reason = '';
+        draft = saveToSheet('Stocktakes', fields);
+      }
+
+      var NL = '\n';
+      sendTelegram('<b>ฉบับร่างตรวจนับสต็อก</b> #' + draft.draft_no + ' (รอผู้ดูแลระบบยืนยัน)'
+        + NL + 'มีผลต่าง: ' + lines.length + ' รายการ'
+        + (fields.note ? NL + 'หมายเหตุ: ' + fields.note : '')
+        + NL + 'บันทึกโดย: ' + session.name + ' (' + CONFIG.USER_ROLES[session.role].name + ')'
+        + NL + 'เวลา: ' + Utilities.formatDate(new Date(), 'Asia/Bangkok', 'dd/MM/yyyy HH:mm'));
+
+      return {
+        success: true, id: draft.id, draft_no: draft.draft_no, diff_count: lines.length,
+        message: 'บันทึกฉบับร่าง ' + draft.draft_no + ' เรียบร้อย (ผลต่าง ' + lines.length + ' รายการ) รอผู้ดูแลระบบยืนยัน'
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('saveStocktakeDraft', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** approveStocktake — ผู้ดูแลระบบยืนยันฉบับร่าง แล้วจึงปรับสต็อกให้ตรงกับที่นับจริง (Admin เท่านั้น)
+ *  ปรับด้วย "ผลต่าง" (นับจริง - ยอดระบบตอนนับ) บวกเข้ากับยอดปัจจุบัน เพื่อไม่ให้การรับเข้า/เบิก
+ *  ที่เกิดขึ้นหลังวันนับถูกเขียนทับ — ถ้าไม่มีความเคลื่อนไหวหลังนับ ยอดหลังปรับจะเท่ากับที่นับจริงพอดี
+ */
+function approveStocktake(token, draftId) {
+  try {
+    var session = validateSession(token);
+    if (!session || session.role !== 'admin') return { success: false, message: 'เฉพาะผู้ดูแลระบบเท่านั้นที่ยืนยันการปรับยอดได้' };
+
+    var lock = LockService.getScriptLock();
+    lock.tryLock(30000);
+    try {
+      var draft = null;
+      getSheetData('Stocktakes').forEach(function(s){ if (s.id === draftId) draft = s; });
+      if (!draft) return { success: false, message: 'ไม่พบฉบับร่าง' };
+      if (draft.status !== 'pending') return { success: false, message: 'ฉบับร่างนี้ดำเนินการไปแล้ว' };
+
+      var itemById = {};
+      getSheetData('Items').forEach(function(i){ itemById[i.id] = i; });
+
+      var now     = new Date().toISOString();
+      var today   = now.split('T')[0];
+      var counter = draft.saved_by_name || draft.created_by_name || '-';
+      var stockUpdates = {};
+      var txRows  = [];
+      var applied = [];
+
+      var lines = (draft.lines || []).map(function(l) {
+        var item = itemById[l.item_id];
+        if (!item) return l;
+        var before = parseInt(item.current_stock) || 0;
+        var after  = Math.max(0, before + (l.actual - l.system));
+        l.before = before;
+        l.after  = after;
+        if (after === before) return l;
+
+        stockUpdates[item.id] = { current_stock: after };
+        txRows.push({
+          id: Utilities.getUuid(),
+          type: 'adjust',
+          item_id: item.id,
+          item_name: item.name,
+          item_code: item.item_code,
+          unit: item.unit,
+          quantity: Math.abs(after - before),
+          diff: after - before,
+          stock_before: before,
+          stock_after: after,
+          ref_id: draft.draft_no,
+          actor_id: session.user_id,
+          actor_name: session.name,
+          actor_role: session.role,
+          counted_by_name: counter,
+          note: 'ปรับยอดจากการตรวจนับ (นับโดย ' + counter + ')' + (draft.note ? ' — ' + draft.note : ''),
+          date: today
+        });
+        applied.push({ item_name: item.name, before: before, after: after, diff: after - before });
+        return l;
+      });
+
+      updateManyInSheet('Items', stockUpdates);
+      saveManyToSheet('Transactions', txRows);
+      updateInSheet('Stocktakes', draft.id, {
+        status: 'approved', lines: lines,
+        approved_by: session.user_id, approved_by_name: session.name, approved_at: now
+      });
+
+      var NL   = '\n';
+      var list = applied.slice(0, 15).map(function(u) {
+        return '• ' + u.item_name + ': ' + u.before + ' → ' + u.after + ' (' + (u.diff > 0 ? '+' : '') + u.diff + ')';
+      }).join(NL);
+      if (applied.length > 15) list += NL + '... และอีก ' + (applied.length - 15) + ' รายการ';
+      sendTelegram('<b>ยืนยันปรับยอดจากการตรวจนับ</b> #' + draft.draft_no
+        + NL + 'ปรับยอด: ' + applied.length + ' รายการ'
+        + (list ? NL + list : '')
+        + NL + 'ตรวจนับโดย: ' + counter
+        + NL + 'ยืนยันโดย: ' + session.name);
+
+      return {
+        success: true, updated: applied.length, draft_no: draft.draft_no,
+        message: applied.length > 0
+          ? 'ยืนยันฉบับร่าง ' + draft.draft_no + ' และปรับยอดเรียบร้อย ' + applied.length + ' รายการ'
+          : 'ยืนยันฉบับร่าง ' + draft.draft_no + ' เรียบร้อย (ยอดตรงกับระบบ ไม่มีการปรับ)'
+      };
+    } finally { lock.releaseLock(); }
+  } catch(err) {
+    logError('approveStocktake', err);
+    return { success: false, message: err.message };
+  }
+}
+
+/** rejectStocktake — ไม่อนุมัติ/ยกเลิกฉบับร่าง (สต็อกไม่ถูกแตะ)
+ *  ผู้ดูแลระบบปฏิเสธได้ทุกฉบับ ส่วนเจ้าหน้าที่บัญชียกเลิกได้เฉพาะฉบับที่ตนเองบันทึก
+ */
+function rejectStocktake(token, draftId, reason) {
+  try {
+    var session = validateSession(token);
+    if (!canStocktake(session)) return { success: false, message: 'ไม่มีสิทธิ์ดำเนินการ' };
+
+    var draft = null;
+    getSheetData('Stocktakes').forEach(function(s){ if (s.id === draftId) draft = s; });
+    if (!draft) return { success: false, message: 'ไม่พบฉบับร่าง' };
+    if (draft.status !== 'pending') return { success: false, message: 'ฉบับร่างนี้ดำเนินการไปแล้ว' };
+
+    var isAdmin = session.role === 'admin';
+    var isOwner = draft.created_by === session.user_id || draft.saved_by === session.user_id;
+    if (!isAdmin && !isOwner) return { success: false, message: 'ยกเลิกได้เฉพาะฉบับร่างที่ตนเองบันทึก' };
+
+    var why = String(reason || '').trim() || (isAdmin ? '' : 'ยกเลิกโดยผู้บันทึก');
+    updateInSheet('Stocktakes', draft.id, {
+      status: 'rejected', reject_reason: why,
+      approved_by: session.user_id, approved_by_name: session.name, approved_at: new Date().toISOString()
+    });
+    sendTelegram('<b>' + (isAdmin ? 'ไม่อนุมัติ' : 'ยกเลิก') + 'ฉบับร่างตรวจนับสต็อก</b> #' + draft.draft_no
+      + '\nเหตุผล: ' + (why || '-')
+      + '\nโดย: ' + session.name);
+    return { success: true, message: (isAdmin ? 'ไม่อนุมัติ' : 'ยกเลิก') + 'ฉบับร่าง ' + draft.draft_no + ' เรียบร้อย (สต็อกไม่ถูกปรับ)' };
+  } catch(err) {
+    logError('rejectStocktake', err);
+    return { success: false, message: err.message };
+  }
+}
+
+// ============================================================
 // RECEIVES (รับวัสดุเข้าคลัง)
 // ============================================================
 
@@ -797,6 +1085,12 @@ function addReceive(token, receiveData) {
       var stockBefore = item.current_stock || 0;
       var stockAfter = stockBefore + qty;
 
+      // ชื่อร้าน/ผู้จำหน่าย และราคาต่อหน่วยของการรับเข้าครั้งนี้ (ใช้แสดงเป็นประวัติการรับเข้าของวัสดุ)
+      var supplier  = String(receiveData.supplier || '').trim();
+      var unitPrice = parseFloat(receiveData.unit_price);
+      if (isNaN(unitPrice) || unitPrice < 0) unitPrice = 0;
+      var totalPrice = Math.round(unitPrice * qty * 100) / 100;
+
       // อัพเดต stock
       updateInSheet('Items', item.id, { current_stock: stockAfter });
 
@@ -812,6 +1106,9 @@ function addReceive(token, receiveData) {
         item_code: item.item_code,
         quantity: qty,
         unit: item.unit,
+        supplier: supplier,
+        unit_price: unitPrice,
+        total_price: totalPrice,
         received_by: session.user_id,
         received_by_name: session.name,
         note: receiveData.note || '',
@@ -841,6 +1138,8 @@ function addReceive(token, receiveData) {
       var msg = '<b>รับวัสดุเข้าคลัง</b> #' + recNo
         + '\nรายการ: ' + item.name + ' (' + item.size + ')'
         + '\nจำนวน: +' + qty + ' ' + item.unit
+        + (supplier ? '\nร้าน/ผู้จำหน่าย: ' + supplier : '')
+        + (unitPrice ? '\nราคา: ' + unitPrice + ' บาท/' + item.unit + ' (รวม ' + totalPrice + ' บาท)' : '')
         + '\nสต็อกคงเหลือ: ' + stockAfter + ' ' + item.unit
         + '\nโดย: ' + session.name
         + '\nวันที่: ' + rec.date;
@@ -854,11 +1153,14 @@ function addReceive(token, receiveData) {
   }
 }
 
-/** getReceives — ดึงประวัติการรับเข้า */
+/** getReceives — ดึงประวัติการรับเข้า (filters.item_id = เฉพาะวัสดุชิ้นเดียว) */
 function getReceives(token, filters) {
   try {
     if (!validateSession(token)) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
     var data = getSheetData('Receives');
+    if (filters && filters.item_id) {
+      data = data.filter(function(r){ return r.item_id === filters.item_id; });
+    }
     if (filters && filters.date_from) {
       data = data.filter(function(r){ return r.date >= filters.date_from; });
     }
@@ -1079,11 +1381,16 @@ function getWithdrawals(token, filters) {
   } catch(err) { return { success: false, message: err.message }; }
 }
 
-/** approveWithdrawal — อนุมัติการเบิก (Admin เท่านั้น) */
+/** canApproveWithdrawal — ผู้ที่อนุมัติ/ปฏิเสธการเบิกได้: ผู้ดูแลระบบ และเจ้าหน้าที่บัญชี */
+function canApproveWithdrawal(session) {
+  return !!session && (session.role === 'admin' || session.role === 'accountant');
+}
+
+/** approveWithdrawal — อนุมัติการเบิก (ผู้ดูแลระบบ / เจ้าหน้าที่บัญชี) */
 function approveWithdrawal(token, wdId, qtyApproved) {
   try {
     var session = validateSession(token);
-    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์อนุมัติ' };
+    if (!canApproveWithdrawal(session)) return { success: false, message: 'ไม่มีสิทธิ์อนุมัติ' };
     var lock = LockService.getScriptLock();
     lock.tryLock(10000);
     try {
@@ -1168,14 +1475,14 @@ function approveWithdrawal(token, wdId, qtyApproved) {
 }
 
 /**
- * approveWithdrawalBatch — อนุมัติคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (Admin เท่านั้น)
+ * approveWithdrawalBatch — อนุมัติคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (ผู้ดูแลระบบ / เจ้าหน้าที่บัญชี)
  * approvals: [{ id, quantity }] — ใบเบิกที่ยังรออนุมัติในชุดนี้ พร้อมจำนวนที่จะอนุมัติ
  * ตัดสต็อกและบันทึก Transaction ให้ทุกรายการ แล้วแจ้งเตือนรวมเป็นข้อความเดียว (ประหยัดโควตา LINE)
  */
 function approveWithdrawalBatch(token, batchNo, approvals) {
   try {
     var session = validateSession(token);
-    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์อนุมัติ' };
+    if (!canApproveWithdrawal(session)) return { success: false, message: 'ไม่มีสิทธิ์อนุมัติ' };
     if (!approvals || !approvals.length) return { success: false, message: 'ไม่มีรายการที่จะอนุมัติ' };
 
     var lock = LockService.getScriptLock();
@@ -1266,11 +1573,11 @@ function approveWithdrawalBatch(token, batchNo, approvals) {
   }
 }
 
-/** rejectWithdrawalBatch — ปฏิเสธคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (Admin เท่านั้น) */
+/** rejectWithdrawalBatch — ปฏิเสธคำขอเบิกทั้งชุด (batch) ในครั้งเดียว (ผู้ดูแลระบบ / เจ้าหน้าที่บัญชี) */
 function rejectWithdrawalBatch(token, batchNo, reason) {
   try {
     var session = validateSession(token);
-    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+    if (!canApproveWithdrawal(session)) return { success: false, message: 'ไม่มีสิทธิ์' };
     var wds = getSheetData('Withdrawals').filter(function(w){ return w.batch_no === batchNo && w.status === 'pending'; });
     if (!wds.length) return { success: false, message: 'ไม่พบคำขอที่รออนุมัติในชุดนี้' };
 
@@ -1311,11 +1618,11 @@ function rejectWithdrawalBatch(token, batchNo, reason) {
   }
 }
 
-/** rejectWithdrawal — ปฏิเสธการเบิก (Admin เท่านั้น) */
+/** rejectWithdrawal — ปฏิเสธการเบิก (ผู้ดูแลระบบ / เจ้าหน้าที่บัญชี) */
 function rejectWithdrawal(token, wdId, reason) {
   try {
     var session = validateSession(token);
-    if (!session || session.role !== 'admin') return { success: false, message: 'ไม่มีสิทธิ์' };
+    if (!canApproveWithdrawal(session)) return { success: false, message: 'ไม่มีสิทธิ์' };
     var wds = getSheetData('Withdrawals');
     var wd = null;
     for (var i = 0; i < wds.length; i++) {
@@ -1414,6 +1721,10 @@ function getDashboardStats(token) {
     var lowStockItems = items.filter(function(i){ return (i.current_stock||0) <= (i.min_stock || threshold); });
     var pendingWds = wds.filter(function(w){ return w.status === 'pending'; });
     var todayTxs  = txs.filter(function(t){ return t.date === today; });
+    // ฉบับร่างตรวจนับที่รอยืนยัน (แสดงเป็นตัวเลขกำกับเมนู "นับสต็อก" ให้ผู้ที่เกี่ยวข้องเห็น)
+    var pendingStocktakes = canStocktake(session)
+      ? getSheetData('Stocktakes').filter(function(s){ return s.status === 'pending'; }).length
+      : 0;
 
     // กราฟรายเดือน (6 เดือนล่าสุด)
     var monthlyData = {};
@@ -1468,6 +1779,7 @@ function getDashboardStats(token) {
         total_items: totalItems,
         low_stock: lowStockItems.length,
         pending: pendingWds.length,
+        pending_stocktake: pendingStocktakes,
         today_tx: todayTxs.length
       },
       monthly: Object.values(monthlyData),
@@ -1748,12 +2060,12 @@ function generateExportUrl(token, reportType, filters) {
 
     if (reportType === 'receives') {
       sheet.setName('รายงานรับเข้า');
-      sheet.appendRow(['เลขที่รับ','วันที่','รหัสวัสดุ','ชื่อวัสดุ','จำนวน','หน่วย','ผู้รับ','หมายเหตุ']);
+      sheet.appendRow(['เลขที่รับ','วันที่','รหัสวัสดุ','ชื่อวัสดุ','จำนวน','หน่วย','ร้าน/ผู้จำหน่าย','ราคาต่อหน่วย','รวมเงิน','ผู้รับ','หมายเหตุ']);
       var recvs = getSheetData('Receives');
       if (filters && filters.date_from) recvs = recvs.filter(function(r){ return r.date >= filters.date_from; });
       if (filters && filters.date_to)   recvs = recvs.filter(function(r){ return r.date <= filters.date_to; });
       recvs.forEach(function(r){
-        sheet.appendRow([r.receive_no, r.date, r.item_code, r.item_name, r.quantity, r.unit, r.received_by_name, r.note||'']);
+        sheet.appendRow([r.receive_no, r.date, r.item_code, r.item_name, r.quantity, r.unit, r.supplier||'', r.unit_price||0, r.total_price||0, r.received_by_name, r.note||'']);
       });
     } else if (reportType === 'withdrawals') {
       sheet.setName('รายงานเบิกออก');
@@ -1978,6 +2290,33 @@ function saveManyToSheet(sheetName, dataList) {
   });
   sheet.getRange(sheet.getLastRow() + 1, 1, values.length, 1).setValues(values);
   return dataList;
+}
+
+/** updateManyInSheet — อัพเดตหลายแถวในครั้งเดียว (อ่าน/เขียนชีตรอบเดียว)
+ *  updatesById = { id: { field: value, ... } } คืนจำนวนแถวที่อัพเดตได้
+ */
+function updateManyInSheet(sheetName, updatesById) {
+  var ids = Object.keys(updatesById || {});
+  if (ids.length === 0) return 0;
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return 0;
+  var range = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1);
+  var rows  = range.getValues();
+  var now   = new Date().toISOString();
+  var count = 0;
+  for (var i = 0; i < rows.length; i++) {
+    try {
+      var obj = JSON.parse(rows[i][0]);
+      var upd = updatesById[obj.id];
+      if (!upd) continue;
+      Object.keys(upd).forEach(function(k){ obj[k] = upd[k]; });
+      obj.updated_at = now;
+      rows[i][0] = JSON.stringify(obj);
+      count++;
+    } catch(e){}
+  }
+  if (count > 0) range.setValues(rows);
+  return count;
 }
 
 /** updateInSheet — อัพเดตข้อมูลตาม id */
