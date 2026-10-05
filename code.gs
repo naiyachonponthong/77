@@ -76,56 +76,61 @@ function doGet(e) {
       var fn = params.fn;
       var args = [];
       try { args = JSON.parse(params.args || '[]'); } catch(err) { args = []; }
-      var result;
-      switch (fn) {
-        case 'login':               result = login(args[0], args[1], args[2]); break;
-        case 'validateSession':     result = validateSession(args[0]); break;
-        case 'bootstrap':           result = bootstrap(args[0]); break;
-        case 'logout':              result = logout(args[0]); break;
-        case 'forgotPassword':      result = forgotPassword(args[0]); break;
-        case 'getItems':            result = getItems(args[0]); break;
-        case 'getItemById':         result = getItemById(args[0], args[1]); break;
-        case 'addItem':             result = addItem(args[0], args[1]); break;
-        case 'addItemsBulk':        result = addItemsBulk(args[0], args[1]); break;
-        case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
-        case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
-        case 'adjustStock':         result = adjustStock(args[0], args[1]); break;
-        case 'getStocktakes':       result = getStocktakes(args[0]); break;
-        case 'saveStocktakeDraft':  result = saveStocktakeDraft(args[0], args[1]); break;
-        case 'approveStocktake':    result = approveStocktake(args[0], args[1]); break;
-        case 'rejectStocktake':     result = rejectStocktake(args[0], args[1], args[2]); break;
-        case 'repairItems':         result = repairItems(args[0], args[1]); break;
-        case 'addReceive':          result = addReceive(args[0], args[1]); break;
-        case 'getReceives':         result = getReceives(args[0], args[1]); break;
-        case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
-        case 'addWithdrawalBulk':   result = addWithdrawalBulk(args[0], args[1]); break;
-        case 'getWithdrawals':      result = getWithdrawals(args[0], args[1]); break;
-        case 'approveWithdrawal':   result = approveWithdrawal(args[0], args[1], args[2]); break;
-        case 'approveWithdrawalBatch': result = approveWithdrawalBatch(args[0], args[1], args[2]); break;
-        case 'rejectWithdrawal':    result = rejectWithdrawal(args[0], args[1], args[2]); break;
-        case 'rejectWithdrawalBatch': result = rejectWithdrawalBatch(args[0], args[1], args[2]); break;
-        case 'cancelWithdrawal':    result = cancelWithdrawal(args[0], args[1]); break;
-        case 'getTransactions':     result = getTransactions(args[0], args[1]); break;
-        case 'getDashboardStats':   result = getDashboardStats(args[0]); break;
-        case 'getUsers':            result = getUsers(args[0]); break;
-        case 'getMyProfile':        result = getMyProfile(args[0]); break;
-        case 'addUser':             result = addUser(args[0], args[1]); break;
-        case 'updateUser':          result = updateUser(args[0], args[1], args[2]); break;
-        case 'changePassword':      result = changePassword(args[0], args[1], args[2]); break;
-        case 'resetUserPassword':   result = resetUserPassword(args[0], args[1]); break;
-        case 'toggleUserActive':    result = toggleUserActive(args[0], args[1]); break;
-        case 'saveConfig':          result = saveConfig(args[0], args[1]); break;
-        case 'getConfig':           result = getConfigSecure(args[0]); break;
-        case 'getPublicConfig':     result = { success: true, data: getPublicConfig() }; break;
-        case 'getMonthlyReport':    result = getMonthlyReport(args[0], args[1], args[2]); break;
-        case 'generateExportUrl':   result = generateExportUrl(args[0], args[1], args[2]); break;
-        case 'uploadFile':          result = uploadFile(args[0], args[1], args[2], args[3]); break;
-        case 'testTelegram':        result = testTelegram(args[0]); break;
-        case 'testLine':            result = testLine(args[0]); break;
-        case 'getLineQuota':        result = getLineQuota(args[0]); break;
-        default:
-          result = { success: false, message: 'Unknown function: ' + fn };
-      }
+      // คำสั่งที่เขียนข้อมูลจะส่ง rid (รหัสคำขอ) มาด้วย — ถ้าหน้าเว็บส่งซ้ำเพราะรอบแรกไม่ได้รับคำตอบ
+      // runOnce จะคืนผลของรอบแรกให้ ไม่ทำรายการซ้ำ
+      var result = runOnce(params.rid, function() {
+        var result;
+        switch (fn) {
+          case 'login':               result = login(args[0], args[1], args[2]); break;
+          case 'validateSession':     result = validateSession(args[0]); break;
+          case 'bootstrap':           result = bootstrap(args[0], args[1]); break;
+          case 'logout':              result = logout(args[0]); break;
+          case 'forgotPassword':      result = forgotPassword(args[0]); break;
+          case 'getItems':            result = getItems(args[0]); break;
+          case 'getItemById':         result = getItemById(args[0], args[1]); break;
+          case 'addItem':             result = addItem(args[0], args[1]); break;
+          case 'addItemsBulk':        result = addItemsBulk(args[0], args[1]); break;
+          case 'updateItem':          result = updateItem(args[0], args[1], args[2]); break;
+          case 'deleteItem':          result = deleteItem(args[0], args[1]); break;
+          case 'adjustStock':         result = adjustStock(args[0], args[1]); break;
+          case 'getStocktakes':       result = getStocktakes(args[0]); break;
+          case 'saveStocktakeDraft':  result = saveStocktakeDraft(args[0], args[1]); break;
+          case 'approveStocktake':    result = approveStocktake(args[0], args[1]); break;
+          case 'rejectStocktake':     result = rejectStocktake(args[0], args[1], args[2]); break;
+          case 'repairItems':         result = repairItems(args[0], args[1]); break;
+          case 'addReceive':          result = addReceive(args[0], args[1]); break;
+          case 'getReceives':         result = getReceives(args[0], args[1]); break;
+          case 'addWithdrawal':       result = addWithdrawal(args[0], args[1]); break;
+          case 'addWithdrawalBulk':   result = addWithdrawalBulk(args[0], args[1]); break;
+          case 'getWithdrawals':      result = getWithdrawals(args[0], args[1]); break;
+          case 'approveWithdrawal':   result = approveWithdrawal(args[0], args[1], args[2]); break;
+          case 'approveWithdrawalBatch': result = approveWithdrawalBatch(args[0], args[1], args[2]); break;
+          case 'rejectWithdrawal':    result = rejectWithdrawal(args[0], args[1], args[2]); break;
+          case 'rejectWithdrawalBatch': result = rejectWithdrawalBatch(args[0], args[1], args[2]); break;
+          case 'cancelWithdrawal':    result = cancelWithdrawal(args[0], args[1]); break;
+          case 'getTransactions':     result = getTransactions(args[0], args[1]); break;
+          case 'getDashboardStats':   result = getDashboardStats(args[0]); break;
+          case 'getUsers':            result = getUsers(args[0]); break;
+          case 'getMyProfile':        result = getMyProfile(args[0]); break;
+          case 'addUser':             result = addUser(args[0], args[1]); break;
+          case 'updateUser':          result = updateUser(args[0], args[1], args[2]); break;
+          case 'changePassword':      result = changePassword(args[0], args[1], args[2]); break;
+          case 'resetUserPassword':   result = resetUserPassword(args[0], args[1]); break;
+          case 'toggleUserActive':    result = toggleUserActive(args[0], args[1]); break;
+          case 'saveConfig':          result = saveConfig(args[0], args[1]); break;
+          case 'getConfig':           result = getConfigSecure(args[0]); break;
+          case 'getPublicConfig':     result = { success: true, data: getPublicConfig() }; break;
+          case 'getMonthlyReport':    result = getMonthlyReport(args[0], args[1], args[2]); break;
+          case 'generateExportUrl':   result = generateExportUrl(args[0], args[1], args[2]); break;
+          case 'uploadFile':          result = uploadFile(args[0], args[1], args[2], args[3]); break;
+          case 'testTelegram':        result = testTelegram(args[0]); break;
+          case 'testLine':            result = testLine(args[0]); break;
+          case 'getLineQuota':        result = getLineQuota(args[0]); break;
+          default:
+            result = { success: false, message: 'Unknown function: ' + fn };
+        }
+        return result;
+      });
       return jsonResponse(result);
     }
 
@@ -188,20 +193,73 @@ function doPost(e) {
       fn = e.parameter.fn;
       try { args = JSON.parse(e.parameter.args || '[]'); } catch(err) { args = []; }
     }
-    var result;
-    switch (fn) {
-      case 'uploadFile':    result = uploadFile(args[0], args[1], args[2], args[3]); break;
-      case 'addItemsBulk': result = addItemsBulk(args[0], args[1]); break;
-      case 'adjustStock':  result = adjustStock(args[0], args[1]); break;
-      case 'saveStocktakeDraft': result = saveStocktakeDraft(args[0], args[1]); break;
-      case 'addWithdrawalBulk': result = addWithdrawalBulk(args[0], args[1]); break;
-      default: result = { success: false, message: 'Use GET for ' + fn };
-    }
+    var rid = (e.parameter && e.parameter.rid) || '';
+    var result = runOnce(rid, function() {
+      switch (fn) {
+        case 'uploadFile':    return uploadFile(args[0], args[1], args[2], args[3]);
+        case 'addItemsBulk': return addItemsBulk(args[0], args[1]);
+        case 'adjustStock':  return adjustStock(args[0], args[1]);
+        case 'saveStocktakeDraft': return saveStocktakeDraft(args[0], args[1]);
+        case 'addWithdrawalBulk': return addWithdrawalBulk(args[0], args[1]);
+        default: return { success: false, message: 'Use GET for ' + fn };
+      }
+    });
     return jsonResponse(result);
   } catch(err) {
     logError('doPost', err);
     return jsonResponse({ success: false, message: err.message || String(err) });
   }
+}
+
+/**
+ * runOnce — กันการทำรายการซ้ำเมื่อหน้าเว็บส่งคำขอเดิมมาอีกรอบ (idempotency)
+ * Apps Script บางครั้งทำงานเสร็จแล้วแต่ส่งคำตอบกลับไม่ถึงหน้าเว็บ ถ้าหน้าเว็บกดซ้ำ/ลองใหม่เฉย ๆ
+ * รายการอย่าง "รับเข้า" จะถูกบันทึก 2 ครั้ง — จึงให้หน้าเว็บแนบ rid เดิมมาทุกครั้งที่ลองใหม่
+ * แล้วเก็บผลของรอบแรกไว้ในแคช 10 นาที: รอบถัดไปที่ rid ซ้ำจะได้ผลเดิมกลับไปโดยไม่ทำงานอีก
+ */
+var REQUEST_PENDING = 'PENDING';
+function runOnce(rid, exec) {
+  if (!rid) return exec();
+  var cache, key = 'req_' + String(rid).substring(0, 80), prior = null;
+  try {
+    cache = CacheService.getScriptCache();
+    // เช็ค + จองคิว ต้องทำภายใต้ lock เดียวกัน ไม่งั้นสองรอบที่มาพร้อมกันจะผ่านเช็คทั้งคู่
+    var lock = LockService.getScriptLock();
+    var locked = lock.tryLock(20000);
+    try {
+      prior = cache.get(key);
+      if (!prior) cache.put(key, REQUEST_PENDING, 600);
+    } finally { if (locked) lock.releaseLock(); }
+  } catch (err) {
+    return exec();   // แคชใช้ไม่ได้ -> ทำงานตามปกติ ดีกว่าปฏิเสธคำขอ
+  }
+
+  if (prior && prior !== REQUEST_PENDING) return JSON.parse(prior);
+  if (prior === REQUEST_PENDING) {
+    // รอบแรกยังทำงานไม่เสร็จ -> รอผลของรอบนั้น
+    for (var i = 0; i < 25; i++) {
+      Utilities.sleep(1000);
+      var v = cache.get(key);
+      if (v && v !== REQUEST_PENDING) return JSON.parse(v);
+      if (!v) break;   // รอบแรกล้มเหลวและคืนคิวแล้ว
+    }
+    return { success: false, pending: true, message: 'ระบบกำลังประมวลผลคำขอนี้อยู่ กรุณารอสักครู่แล้วตรวจสอบผลก่อนทำรายการซ้ำ' };
+  }
+
+  var result;
+  try {
+    result = exec();
+  } catch (err) {
+    cache.remove(key);
+    throw err;
+  }
+  try {
+    cache.put(key, JSON.stringify(result), 600);
+  } catch (err) {
+    // ผลลัพธ์ใหญ่เกินแคช (เช่น เพิ่มวัสดุหลายร้อยรายการ) -> เก็บเฉพาะสถานะ
+    try { cache.put(key, JSON.stringify({ success: !!(result && result.success), message: (result && result.message) || '', replayed: true }), 600); } catch (e) {}
+  }
+  return result;
 }
 
 function jsonResponse(data) {
@@ -349,7 +407,8 @@ function login(username, password, role) {
       success: true,
       token: token,
       user: { id: user.id, username: user.username, role: user.role, name: user.name, department: user.department || '', avatar: user.avatar || '' },
-      config: getPublicConfig()
+      config: getPublicConfig(),
+      dashboard: getDashboardStats(token)   // หน้าแรกหลัง login คือ Dashboard — ส่งมาในรอบเดียวกัน
     };
   } catch(err) {
     logError('login', err);
@@ -1817,18 +1876,18 @@ function getUsers(token) {
  * (เดิมต้องยิง validateSession + getMyProfile + getPublicConfig รวม 3 รอบ
  * ซึ่งแต่ละรอบมี latency ของ Apps Script คนละ 1-3 วินาที ทำให้เข้าระบบช้ามาก)
  */
-function bootstrap(token) {
+function bootstrap(token, withDashboard) {
   try {
     var session = validateSession(token);
-    if (!session) return { success: false, message: 'กรุณาเข้าสู่ระบบใหม่' };
+    if (!session) return { success: false, invalid_session: true, message: 'กรุณาเข้าสู่ระบบใหม่' };
 
     var users = getSheetData('Users');
     var me = null;
     for (var i = 0; i < users.length; i++) {
       if (users[i].id === session.user_id) { me = users[i]; break; }
     }
-    if (!me) return { success: false, message: 'ไม่พบบัญชีผู้ใช้' };
-    if (me.active === false) return { success: false, message: 'บัญชีนี้ถูกระงับการใช้งาน' };
+    if (!me) return { success: false, invalid_session: true, message: 'ไม่พบบัญชีผู้ใช้' };
+    if (me.active === false) return { success: false, invalid_session: true, message: 'บัญชีนี้ถูกระงับการใช้งาน' };
 
     return {
       success: true,
@@ -1836,7 +1895,9 @@ function bootstrap(token) {
         id: me.id, username: me.username, role: me.role, name: me.name,
         department: me.department || '', avatar: me.avatar || ''
       },
-      config: getPublicConfig()
+      config: getPublicConfig(),
+      // หน้าแรกหลังเปิดเว็บคือ Dashboard เสมอ — ส่งมาในรอบเดียวกัน ไม่ต้องให้หน้าเว็บเรียกอีกรอบ
+      dashboard: withDashboard ? getDashboardStats(token) : null
     };
   } catch(err) {
     logError('bootstrap', err);
@@ -2360,7 +2421,7 @@ function getConfig() {
   var cached = cache.get('config_v1');
   if (cached) { try { return JSON.parse(cached); } catch(e){} }
   var cfg = readConfigFromSheet();
-  try { cache.put('config_v1', JSON.stringify(cfg), 300); } catch(e){}
+  try { cache.put('config_v1', JSON.stringify(cfg), 1800); } catch(e){}
   return cfg;
 }
 
@@ -2397,7 +2458,8 @@ function getPublicConfig() {
     organization_name: cfg.organization_name || '',
     departments: cfg.departments || '',
     low_stock_threshold: cfg.low_stock_threshold || CONFIG.LOW_STOCK_DEFAULT,
-    app_version: cfg.app_version || CONFIG.APP_VERSION
+    app_version: cfg.app_version || CONFIG.APP_VERSION,
+    api_idempotent: true   // backend นี้รองรับ rid (runOnce) -> หน้าเว็บลองส่งคำสั่งเขียนซ้ำได้อย่างปลอดภัย
   };
 }
 
